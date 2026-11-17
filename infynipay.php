@@ -1,0 +1,2670 @@
+<?php
+/**
+ * Plugin Name:          InfyniPay
+ * Plugin URI:           https://www.infynipay.com/integrations/woocommerce/
+ * Description:          Accept payments via InfyniPay — a flexible, multi-provider payment gateway for WooCommerce.
+ * Version:              1.0.0
+ * Author:               InfyniPay
+ * Author URI:           https://www.infynipay.com/about/
+ * Developer:            InfyniPay
+ * Developer URI:        https://www.infynipay.com/about/
+ * Text Domain:          infynipay
+ * Domain Path:          /languages
+ *
+ * Requires at least:    6.0
+ * Requires PHP:         8.0
+ * WC requires at least: 8.0
+ * WC tested up to:      10.8.1
+ *
+ * License:              GNU General Public License v3.0
+ * License URI:          https://www.gnu.org/licenses/gpl-3.0.html
+ *
+ * @package InfyniPay
+ */
+
+defined( 'ABSPATH' ) || exit;
+
+function infynipay_bootstrap_debug_enabled()
+{
+	return defined('INFYNIPAY_DEBUG')
+		? (bool) INFYNIPAY_DEBUG
+		: (defined('WP_DEBUG') && WP_DEBUG);
+}
+
+function infynipay_log_bootstrap($message, $level = 'info', $context = array())
+{
+	if (in_array($level, array('debug', 'info'), true) && !infynipay_bootstrap_debug_enabled()) {
+		return;
+	}
+
+	$context = array_merge(
+		array('source' => 'infynipay'),
+		$context
+	);
+
+	if (function_exists('wc_get_logger')) {
+		wc_get_logger()->log($level, $message, $context);
+		return;
+	}
+
+	error_log( // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log,QITStandard.PHP.DebugCode.DebugFunctionFound -- Intentional production error logging, not debug code.
+		sprintf(
+			'[infynipay][%s] %s %s',
+			strtoupper($level),
+			$message,
+			empty($context) ? '' : wp_json_encode($context)
+		)
+	);
+}
+
+register_shutdown_function(function () {
+	$error = error_get_last();
+
+	if ($error === null) {
+		return;
+	}
+
+	$fatal_types = array(E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR);
+
+	if (!in_array($error['type'], $fatal_types, true)) {
+		return;
+	}
+
+	infynipay_log_bootstrap('Plugin shutdown after fatal error', 'error', array(
+		'type' => $error['type'],
+		'file' => $error['file'],
+		'line' => $error['line'],
+		'message' => $error['message'],
+	));
+});
+
+infynipay_log_bootstrap('Plugin file loaded');
+
+// Enable WC block feature for plugin
+add_action('before_woocommerce_init', function () {
+	if (class_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil')) {
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+			'cart_checkout_blocks',
+			__FILE__,
+			true
+		);
+		\Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
+			'custom_order_tables',
+			__FILE__,
+			true
+		);
+	}
+});
+
+// Add InfyniPay to WC payment gateways
+add_filter('woocommerce_payment_gateways', 'infynipay_add_gateway_class');
+function infynipay_add_gateway_class($gateways)
+{
+	$gateways[] = 'InfyniPay_Gateway';
+	return $gateways;
+}
+
+// Add Blocks support for InfyniPay
+add_action('woocommerce_blocks_loaded', function () {
+	if (!class_exists('InfyniPay_Blocks')) {
+		require_once plugin_dir_path(__FILE__) . 'includes/class-wc-infynipay-gateway-blocks-support.php';
+	}
+
+	add_action('woocommerce_blocks_payment_method_type_registration', function ($registry) {
+		if (
+			class_exists('\\Automattic\\WooCommerce\\Blocks\\Payments\\PaymentMethodRegistry') &&
+			class_exists('\\Automattic\\WooCommerce\\Blocks\\Payments\\Integrations\\AbstractPaymentMethodType')
+		) {
+
+			$registry->register(new InfyniPay_Blocks());
+		}
+	});
+});
+
+require_once plugin_dir_path(__FILE__) . 'includes/class-infynipay-app-service.php';
+require_once plugin_dir_path(__FILE__) . 'includes/class-infynipay-payment-service.php';
+
+// Initialize InfyniPay plugin
+add_action('plugins_loaded', 'infynipay_init_gateway_class');
+function infynipay_init_gateway_class()
+{
+	infynipay_log_bootstrap('plugins_loaded hook reached');
+
+	if (!class_exists('WC_Payment_Gateway')) {
+		infynipay_log_bootstrap('WooCommerce payment gateway base class is not available yet', 'warning');
+		return;
+	}
+
+	class InfyniPay_Gateway extends WC_Payment_Gateway
+	{
+		protected string $infynipay_panel_url = "https://console.infynipay.com";
+		protected string $infynipay_payment_app_api_url = "https://appapi.infynipay.com";
+		protected string $infynipay_payment_api_url = "https://api.infynipay.com";
+
+		/**
+		 * Largest provider icon the proxy will fetch or re-serve.
+		 */
+		protected const PROVIDER_ICON_MAX_BYTES = 512000;
+
+		/**
+		 * SVG elements the proxy will re-serve. Allowlist, not denylist: anything not
+		 * named here is dropped, so a newly discovered scripting element fails closed.
+		 *
+		 * Deliberately absent: script, foreignObject, a, image, iframe, embed, object,
+		 * and the animation elements (animate, set, handler...), all of which can
+		 * execute JavaScript or pull in external content.
+		 */
+		protected const PROVIDER_ICON_SVG_ELEMENTS = array(
+			'svg', 'g', 'defs', 'symbol', 'use', 'switch', 'title', 'desc', 'style',
+			'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon',
+			'text', 'tspan', 'textpath', 'marker',
+			'lineargradient', 'radialgradient', 'stop', 'pattern', 'clippath', 'mask',
+			'filter', 'fegaussianblur', 'feoffset', 'feblend', 'fecolormatrix',
+			'fecomposite', 'feflood', 'femerge', 'femergenode', 'fedropshadow',
+		);
+		protected string $app_id;
+		protected string $token;
+		protected string $webhook_token;
+		protected string $hosted_page_id;
+		protected InfyniPay_App_Service $app_service;
+		protected InfyniPay_Payment_Service $payment_service;
+
+		public function __construct()
+		{
+			$this->id = 'infynipay';
+			$this->has_fields = false; // In case you need a custom credit card form
+			$this->method_title = __( 'InfyniPay', 'infynipay' );
+			$this->method_description = __( 'Pay with confidence. InfyniPay handles the rest.', 'infynipay' );
+			$this->icon = $this->get_logo_url();
+
+			// Gateways can support subscriptions, refunds, saved payment methods
+			$this->supports = array(
+				'products',
+				'refunds'
+			);
+
+			$this->init_form_fields();
+			$this->init_settings(); // Load the settings
+
+			$this->title = $this->get_option('title');
+			$this->description = $this->get_option('description');
+			$this->enabled = $this->get_option('enabled');
+
+			$this->testmode = 'yes' === $this->get_option('testmode');
+			$this->app_id = $this->testmode ? $this->get_option('sandbox_app_id') : $this->get_option('live_app_id');
+			$this->token = $this->testmode ? $this->get_option('sandbox_token') : $this->get_option('live_token');
+			$this->webhook_token = $this->testmode ? $this->get_option('sandbox_webhook_token') : $this->get_option('live_webhook_token');
+			$this->hosted_page_id = $this->testmode ? $this->get_option('sandbox_hosted_page_id') : $this->get_option('live_hosted_page_id');
+			$service_logger = function ($message, $level = 'info', $context = array()) {
+				$this->log($message, $level, $context);
+			};
+			$this->app_service = new InfyniPay_App_Service($this->infynipay_payment_app_api_url, $service_logger);
+			$this->payment_service = new InfyniPay_Payment_Service($this->infynipay_payment_api_url, $service_logger);
+
+			// Hook for saving settings
+			add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'process_admin_options'));
+			add_action('woocommerce_update_options_payment_gateways_' . $this->id, array($this, 'flush_checkout_methods_cache'), 20);
+			add_action('admin_init', array($this, 'guard_infynipay_enable_route'));
+			add_action('admin_init', array($this, 'maybe_auto_enable_for_completed_setup'));
+			add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
+			add_action('wp_enqueue_scripts', array($this, 'enqueue_checkout_assets'));
+			add_action('wp_ajax_infynipay_provider_icon', array($this, 'handle_provider_icon_proxy'));
+			add_action('wp_ajax_nopriv_infynipay_provider_icon', array($this, 'handle_provider_icon_proxy'));
+
+			// Hooks for handling webhooks
+			add_action('woocommerce_api_infynipay_setup', array($this, 'setup_handler'));
+			add_action('woocommerce_api_payment_webhook', array($this, 'payment_webhook_handler'));
+
+			// Admin notice on successful setup
+			add_action('admin_notices', array($this, 'render_admin_notices'));
+
+			// Show InfyniPay payment ID in the admin order edit panel
+			add_action('woocommerce_admin_order_data_after_order_details', array($this, 'render_admin_order_payment_id'));
+
+			// Show manual refund warning banner at the top of the admin order edit page
+			add_action('admin_notices', array($this, 'render_manual_refund_admin_notice'));
+
+			// Handles payment state and order status on order received (thank you) page
+			add_action('woocommerce_thankyou', array($this, 'thankyou_page_handler'));
+			add_action('woocommerce_order_details_after_order_table', array($this, 'render_infynipay_order_payment_box'));
+			add_filter('woocommerce_available_payment_gateways', array($this, 'restrict_order_pay_gateways_to_infynipay'), 20);
+			add_filter('woocommerce_order_needs_payment', array($this, 'prevent_terminal_infynipay_order_payment'), 20, 3);
+
+			// Add sandbox badge to checkout title and customer-facing order detail
+			if ($this->testmode) {
+				add_filter('woocommerce_gateway_title', array($this, 'add_sandbox_badge_to_title'), 10, 2);
+				add_filter('woocommerce_order_get_payment_method_title', array($this, 'add_sandbox_badge_to_order_payment_title'), 10, 2);
+			}
+		}
+
+		protected function get_active_environment_label(): string
+		{
+			return $this->testmode ? 'sandbox' : 'live';
+		}
+
+		protected function flush_checkout_methods_cache(string $sandbox_app_id = '', string $live_app_id = ''): void
+		{
+			$settings = get_option('woocommerce_' . $this->id . '_settings', array());
+
+			$ids_to_flush = array_filter(array_unique(array(
+				$sandbox_app_id,
+				$live_app_id,
+				$settings['sandbox_app_id'] ?? '',
+				$settings['live_app_id'] ?? '',
+			)));
+
+			foreach ($ids_to_flush as $app_id) {
+				delete_transient('infynipay_profile_checkout_methods_' . md5($app_id));
+			}
+
+			$this->log('Checkout methods cache flushed', 'info', array('app_ids' => array_values($ids_to_flush)));
+		}
+
+		protected function get_missing_active_environment_settings(): array
+		{
+			$missing = array();
+
+			if ($this->app_id === '') {
+				$missing[] = 'app_id';
+			}
+
+			if ($this->token === '') {
+				$missing[] = 'token';
+			}
+
+			return $missing;
+		}
+
+		protected function get_missing_environment_settings(string $environment): array
+		{
+			$settings = get_option('woocommerce_' . $this->id . '_settings', array());
+			$prefix = $environment === 'live' ? 'live' : 'sandbox';
+			$missing = array();
+
+			if (empty($settings[$prefix . '_app_id'])) {
+				$missing[] = 'app ID';
+			}
+
+			if (empty($settings[$prefix . '_token'])) {
+				$missing[] = 'token';
+			}
+
+			return $missing;
+		}
+
+		public function render_admin_notices()
+		{
+			if (!$this->is_infynipay_settings_page()) {
+				return;
+			}
+
+			if ($this->is_local_callback_base_url()) {
+				$webhook_url = $this->build_public_wc_api_url('payment_webhook');
+				?>
+				<div class="notice infynipay-warning-notice">
+					<div class="infynipay-warning-notice__header">
+						<span class="infynipay-warning-notice__icon" aria-hidden="true">&#9888;</span>
+						<span class="infynipay-warning-notice__eyebrow"><?php esc_html_e( 'Action required — Webhook unreachable on localhost', 'infynipay' ); ?></span>
+					</div>
+					<div class="infynipay-warning-notice__body-wrap">
+						<p class="infynipay-warning-notice__title"><?php esc_html_e( 'InfyniPay cannot receive live payment webhooks.', 'infynipay' ); ?></p>
+						<p class="infynipay-warning-notice__body">
+							<?php
+							echo wp_kses(
+								__( 'Your store is currently using a <strong>localhost callback URL</strong>. Payment webhooks cannot reach localhost from outside your machine. Use a public domain or a tunnel such as Cloudflare Tunnel or ngrok before accepting live payments.', 'infynipay' ),
+								array( 'strong' => array() )
+							);
+							?>
+							<a href="https://github.com/infynipay/infynipay-docs/blob/main/CLOUDFLARE-TUNNEL-INSTRUCTIONS.md" target="_blank" rel="noopener noreferrer"><?php esc_html_e( 'Learn how to set up a Cloudflare Tunnel →', 'infynipay' ); ?></a>
+						</p>
+						<p class="infynipay-warning-notice__meta">
+							<span class="infynipay-warning-notice__meta-label"><?php esc_html_e( 'Current webhook URL', 'infynipay' ); ?></span>
+							<a class="infynipay-warning-notice__link" href="<?php echo esc_url($webhook_url); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($webhook_url); ?></a>
+						</p>
+					</div>
+				</div>
+				<?php
+			}
+
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only URL param set by the plugin itself after a successful setup redirect; no user-supplied data is processed.
+			if (
+				isset($_GET['infynipay_setup']) && // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				$_GET['infynipay_setup'] === 'success' // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			) {
+				include plugin_dir_path(__FILE__) . 'templates/admin-notice-success.php';
+			}
+		}
+
+		public function is_available()
+		{
+			if (!parent::is_available()) {
+				return false;
+			}
+
+			$missing = $this->get_missing_active_environment_settings();
+
+			if (!empty($missing)) {
+				$this->log('InfyniPay is unavailable because checkout configuration is incomplete', 'warning', array(
+					'environment' => $this->get_active_environment_label(),
+					'missing' => $missing,
+				));
+
+				return false;
+			}
+
+			return true;
+		}
+
+		public function needs_setup()
+		{
+			$settings = get_option('woocommerce_' . $this->id . '_settings', array());
+
+			return empty($settings['sandbox_app_id'])
+				|| empty($settings['sandbox_token'])
+				|| empty($settings['live_app_id'])
+				|| empty($settings['live_token']);
+		}
+
+		/**
+		 * Signals to WooCommerce's Payments UI that the account is connected.
+		 * WooCommerce uses this to decide whether to show an Enable toggle (not connected)
+		 * or a Manage button (connected). When setup is complete, the account is connected.
+		 */
+		public function is_account_connected(): bool
+		{
+			return !$this->needs_setup();
+		}
+
+		/**
+		 * Auto-enables the gateway the first time setup is complete so the WooCommerce
+		 * Payments list shows Manage instead of Enable.
+		 * Runs once and sets a flag so merchant manual changes are respected after that.
+		 */
+		public function maybe_auto_enable_for_completed_setup()
+		{
+			if ($this->needs_setup()) {
+				return;
+			}
+
+			if (get_option('infynipay_setup_auto_enabled', false)) {
+				return;
+			}
+
+			$option_key = 'woocommerce_' . $this->id . '_settings';
+			$settings = get_option($option_key, array());
+
+			if (!is_array($settings)) {
+				$settings = array();
+			}
+
+			update_option('infynipay_setup_auto_enabled', '1');
+
+			$this->log('Setup completion recorded (gateway not auto-enabled)', 'info');
+		}
+
+		// Plugin options
+		public function init_form_fields()
+		{
+			$return_url = add_query_arg(
+				'infynipay_state',
+				wp_create_nonce('infynipay_setup_state'),
+				$this->build_public_wc_api_url('infynipay_setup')
+			);
+			$setup_url = $this->infynipay_panel_url . '/auth/signin?returnUrl=' . urlencode($return_url) . '&grantAuthorization=' . urlencode('true');
+
+			$saved_settings = get_option('woocommerce_' . $this->id . '_settings', array());
+			$sandbox_app_id = $saved_settings['sandbox_app_id'] ?? '';
+			$sandbox_token = $saved_settings['sandbox_token'] ?? '';
+			$live_app_id = $saved_settings['live_app_id'] ?? '';
+			$live_token = $saved_settings['live_token'] ?? '';
+
+			$setup_completed =
+				!(empty($sandbox_app_id)) &&
+				!(empty($sandbox_token)) &&
+				!(empty($live_app_id)) &&
+				!(empty($live_token));
+
+			$this->form_fields = array(
+				'general_section' => array(
+					'title' => __( 'Checkout display', 'infynipay' ),
+					'type' => 'title',
+				),
+				'enabled' => array(
+					'title' => __( 'Availability', 'infynipay' ),
+					'type' => 'checkbox',
+					'label' => __( 'Enable InfyniPay at checkout', 'infynipay' ),
+					'default' => 'no'
+				),
+				'title' => array(
+					'title' => __( 'Checkout title', 'infynipay' ),
+					'type' => 'text',
+					'description' => __( 'Shown to customers in the list of payment methods during checkout.', 'infynipay' ),
+					'default' => __( 'InfyniPay', 'infynipay' ),
+					'desc_tip' => true,
+				),
+				'description' => array(
+					'title' => __( 'Checkout description', 'infynipay' ),
+					'type' => 'textarea',
+					'description' => __( 'Short helper text shown under the payment method title at checkout.', 'infynipay' ),
+					'default' => __( 'Simply pay via our payment gateway.', 'infynipay' ),
+					'css' => 'min-height: 90px;',
+				),
+				'setup_status' => array(
+					'title' => __( 'Account connection', 'infynipay' ),
+					'type' => 'infynipay_setup_status',
+					'setup_completed' => $setup_completed,
+					'setup_url' => $setup_url,
+				),
+				'supported_gateways' => array(
+					'title' => __( 'Supported gateways', 'infynipay' ),
+					'type' => 'infynipay_supported_gateways',
+				),
+			);
+
+			if ($setup_completed) {
+				$this->form_fields['app_setup'] = array(
+					'title' => __( 'Gateway setup', 'infynipay' ),
+					'type' => 'infynipay_app_setup',
+					'sandbox_app_id' => $sandbox_app_id,
+					'sandbox_token' => $sandbox_token,
+					'live_app_id' => $live_app_id,
+					'live_token' => $live_token,
+				);
+
+				$this->form_fields['testmode'] = array(
+					'title' => __( 'Active environment', 'infynipay' ),
+					'type' => 'checkbox',
+					'label' => __( 'Use sandbox credentials for checkout', 'infynipay' ),
+					'default' => 'yes',
+					'description' => __( 'Keep this enabled while testing. When you are ready to run production payments, uncheck it to use your live configuration.', 'infynipay' ),
+				);
+			}
+		}
+
+		public function generate_infynipay_setup_status_html($key, $data)
+		{
+			$field_key = $this->get_field_key($key);
+			$logo_url = $this->get_white_logo_url();
+			$defaults = array(
+				'title' => '',
+				'setup_completed' => false,
+				'setup_url' => '',
+			);
+			$data = wp_parse_args($data, $defaults);
+
+			$button_text = $data['setup_completed']
+				? __( 'Reconnect InfyniPay', 'infynipay' )
+				: __( 'Complete setup', 'infynipay' );
+			$hero_title = $data['setup_completed']
+				? __( 'InfyniPay is connected and ready', 'infynipay' )
+				: __( 'InfyniPay checkout is currently hidden', 'infynipay' );
+
+			ob_start();
+			?>
+			<tr valign="top">
+				<th scope="row" class="titledesc">
+					<label for="<?php echo esc_attr($field_key); ?>"><?php echo esc_html($data['title']); ?></label>
+				</th>
+				<td class="forminp">
+					<div class="infynipay-settings-card">
+						<div class="infynipay-settings-card__compact">
+							<div class="infynipay-brand-lockup">
+								<?php if ($logo_url) : ?>
+									<img class="infynipay-brand-lockup__logo" src="<?php echo esc_url($logo_url); ?>" alt="<?php esc_attr_e( 'InfyniPay logo', 'infynipay' ); ?>">
+								<?php else : ?>
+									<div class="infynipay-brand-lockup__mark" aria-hidden="true">PH</div>
+								<?php endif; ?>
+							</div>
+							<div class="infynipay-settings-card__compact-content">
+								<h2 class="infynipay-settings-card__compact-title"><?php echo esc_html($hero_title); ?></h2>
+							</div>
+						</div>
+						<?php if (!$data['setup_completed']) : ?>
+							<div class="infynipay-settings-card__actions infynipay-settings-card__actions--below-banner">
+								<a class="button button-primary infynipay-settings-card__button" href="<?php echo esc_url($data['setup_url']); ?>" target="_blank" rel="noopener noreferrer"><?php echo esc_html($button_text); ?></a>
+							</div>
+						<?php endif; ?>
+					</div>
+				</td>
+			</tr>
+			<?php
+
+			return ob_get_clean();
+		}
+
+		public function validate_infynipay_setup_status_field($key, $value)
+		{
+			return '';
+		}
+
+		public function validate_infynipay_supported_gateways_field($key, $value)
+		{
+			return '';
+		}
+
+		public function validate_infynipay_gateway_actions_field($key, $value)
+		{
+			return '';
+		}
+
+		public function validate_infynipay_app_setup_field($key, $value)
+		{
+			return '';
+		}
+
+		public function generate_infynipay_app_setup_html($key, $data)
+		{
+			$field_key = $this->get_field_key($key);
+			$defaults = array(
+				'title' => '',
+				'sandbox_app_id' => '',
+				'sandbox_token' => '',
+				'live_app_id' => '',
+				'live_token' => '',
+			);
+			$data = wp_parse_args($data, $defaults);
+
+			$sandbox_details = $this->app_service->get_app_details($data['sandbox_app_id'], $data['sandbox_token']);
+			$live_details = $this->app_service->get_app_details($data['live_app_id'], $data['live_token']);
+
+			$environments = array(
+				'sandbox' => array(
+					'label' => __( 'Sandbox', 'infynipay' ),
+					'app_id' => $data['sandbox_app_id'],
+					'details' => $sandbox_details,
+					'css_mod' => 'sandbox',
+				),
+				'live' => array(
+					'label' => __( 'Live', 'infynipay' ),
+					'app_id' => $data['live_app_id'],
+					'details' => $live_details,
+					'css_mod' => 'live',
+				),
+			);
+
+			ob_start();
+			?>
+			<tr valign="top">
+				<th scope="row" class="titledesc">
+					<label for="<?php echo esc_attr($field_key); ?>"><?php echo esc_html($data['title']); ?></label>
+				</th>
+				<td class="forminp">
+					<div class="infynipay-env-cards">
+						<?php foreach ($environments as $env_key => $env) : ?>
+							<?php
+							$details = $env['details'];
+							$has_details = !empty($details);
+							$is_setup_completed = $has_details && !empty($details['isConnectFirstGateway']);
+							$friendly_name = $has_details ? ($details['friendlyName'] ?? $env['app_id']) : $env['app_id'];
+							$status_mod = $is_setup_completed ? 'complete' : 'pending';
+
+							if ($is_setup_completed) {
+								/* translators: %s: environment label (Sandbox or Live). */
+								$action_label = sprintf( __( 'Manage gateways in %s', 'infynipay' ), $env['label'] );
+								$action_url = rtrim($this->infynipay_panel_url, '/') . '/' . rawurlencode($env['app_id']) . '/gateways';
+								$action_class = 'button button-secondary';
+								$status_text = __( 'Setup complete', 'infynipay' );
+							} else {
+								/* translators: %s: environment label (Sandbox or Live). */
+								$action_label = sprintf( __( 'InfyniPay Setup Complete — %s', 'infynipay' ), $env['label'] );
+								$action_url = rtrim($this->infynipay_panel_url, '/') . '/' . rawurlencode($env['app_id']);
+								$action_class = 'button button-primary';
+								$status_text = __( 'Setup incomplete', 'infynipay' );
+							}
+							?>
+							<div class="infynipay-env-card infynipay-env-card--<?php echo esc_attr($env['css_mod']); ?> infynipay-env-card--<?php echo esc_attr($status_mod); ?>">
+								<div class="infynipay-env-card__header">
+									<span class="infynipay-env-card__badge"><?php echo esc_html($env['label']); ?></span>
+									<span class="infynipay-env-card__status-dot" aria-hidden="true"></span>
+								</div>
+								<?php if ($has_details) : ?>
+								<div class="infynipay-env-card__body">
+									<div class="infynipay-env-card__status-text">
+										<?php if ($is_setup_completed) : ?>
+											<svg class="infynipay-env-card__status-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="#22c55e"/><path d="M3.5 6l2 2 3-3" stroke="#fff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+										<?php else : ?>
+											<svg class="infynipay-env-card__status-icon" width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="6" cy="6" r="6" fill="#f59e0b"/><path d="M6 3.5v3M6 8.5h.01" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>
+										<?php endif; ?>
+										<?php echo esc_html($status_text); ?>
+									</div>
+								</div>
+								<div class="infynipay-env-card__footer">
+									<a class="<?php echo esc_attr($action_class); ?> infynipay-env-card__action" href="<?php echo esc_url($action_url); ?>" target="_blank" rel="noopener noreferrer"><?php echo wp_kses($action_label, array()); ?></a>
+								</div>
+								<?php else : ?>
+								<div class="infynipay-env-card__body infynipay-env-card__error">
+									<?php esc_html_e( 'Unable to load app details. Please check your connection.', 'infynipay' ); ?>
+								</div>
+								<?php endif; ?>
+							</div>
+						<?php endforeach; ?>
+					</div>
+				</td>
+			</tr>
+			<?php
+
+			return ob_get_clean();
+		}
+
+		public function generate_infynipay_supported_gateways_html($key, $data)
+		{
+			$field_key = $this->get_field_key($key);
+			$defaults = array(
+				'title' => '',
+			);
+			$data = wp_parse_args($data, $defaults);
+			$supported_methods = $this->get_admin_all_providers_for_display();
+
+			ob_start();
+			?>
+			<tr valign="top">
+				<th scope="row" class="titledesc">
+					<label for="<?php echo esc_attr($field_key); ?>"><?php echo esc_html($data['title']); ?></label>
+				</th>
+				<td class="forminp">
+					<div class="infynipay-supported-gateways-row">
+						<?php if (!empty($supported_methods)) : ?>
+							<?php $this->render_supported_provider_chips($supported_methods, 'infynipay-provider-strip--grid'); ?>
+						<?php else : ?>
+							<p class="infynipay-supported-gateways-row__empty"><?php esc_html_e( 'No provider icons are available from InfyniPay yet.', 'infynipay' ); ?></p>
+						<?php endif; ?>
+					</div>
+				</td>
+			</tr>
+			<?php
+
+			return ob_get_clean();
+		}
+
+		public function generate_infynipay_gateway_actions_html($key, $data)
+		{
+			$field_key = $this->get_field_key($key);
+			$defaults = array(
+				'title' => '',
+				'manage_sandbox_url' => '',
+				'manage_live_url' => '',
+			);
+			$data = wp_parse_args($data, $defaults);
+
+			ob_start();
+			?>
+			<tr valign="top">
+				<th scope="row" class="titledesc">
+					<label for="<?php echo esc_attr($field_key); ?>"><?php echo esc_html($data['title']); ?></label>
+				</th>
+				<td class="forminp">
+					<div class="infynipay-settings-actions">
+						<a class="button button-secondary infynipay-settings-actions__button" href="<?php echo esc_url($data['manage_sandbox_url']); ?>" target="_blank" rel="noopener noreferrer" title="<?php esc_attr_e( 'Manage Sandbox Gateways in InfyniPay Console', 'infynipay' ); ?>"><?php esc_html_e( 'Manage Sandbox Gateways', 'infynipay' ); ?></a>
+						<a class="button button-secondary infynipay-settings-actions__button" href="<?php echo esc_url($data['manage_live_url']); ?>" target="_blank" rel="noopener noreferrer" title="<?php esc_attr_e( 'Manage Live Gateways in InfyniPay Console', 'infynipay' ); ?>"><?php esc_html_e( 'Manage Live Gateways', 'infynipay' ); ?></a>
+					</div>
+				</td>
+			</tr>
+			<?php
+
+			return ob_get_clean();
+		}
+
+		protected function get_white_logo_url()
+		{
+			$path = 'assets/images/infynipay-white.webp';
+
+			if (file_exists(plugin_dir_path(__FILE__) . $path)) {
+				return plugins_url($path, __FILE__);
+			}
+
+			return $this->get_logo_url();
+		}
+
+		protected function get_logo_url()
+		{
+			$logo_candidates = array(
+				'assets/images/infynipay-blue.png',
+				'assets/images/infynipay-logo.svg',
+				'assets/images/infynipay-logo.png',
+				'assets/images/infynipay.webp',
+			);
+
+			foreach ($logo_candidates as $relative_path) {
+				$absolute_path = plugin_dir_path(__FILE__) . $relative_path;
+
+				if (file_exists($absolute_path)) {
+					return plugins_url($relative_path, __FILE__);
+				}
+			}
+
+			return '';
+		}
+
+		protected function get_provider_icon_proxy_url(string $icon_url): string
+		{
+			if ($icon_url === '' || !$this->is_allowed_provider_icon_url($icon_url)) {
+				return $icon_url;
+			}
+
+			$payload = rtrim(strtr(base64_encode($icon_url), '+/', '-_'), '=');
+
+			return add_query_arg(
+				array(
+					'action' => 'infynipay_provider_icon',
+					'url' => $payload,
+				),
+				admin_url('admin-ajax.php')
+			);
+		}
+
+		protected function get_provider_icon_data_uri(string $icon_url): string
+		{
+			if ($icon_url === '' || !$this->is_allowed_provider_icon_url($icon_url)) {
+				return '';
+			}
+
+			$icon = $this->fetch_provider_icon($icon_url);
+
+			if ($icon === null) {
+				return '';
+			}
+
+			return 'data:' . $icon['content_type'] . ';base64,' . base64_encode($icon['body']);
+		}
+
+		/**
+		 * Fetch, validate and cache a provider icon.
+		 *
+		 * Callers must have run the URL through is_allowed_provider_icon_url() first.
+		 *
+		 * @return array{content_type: string, body: string}|null Null when the response
+		 *                                                        is not a usable image.
+		 */
+		protected function fetch_provider_icon(string $icon_url)
+		{
+			// Cache key is versioned so that anything cached by an earlier, weaker
+			// version of this code is abandoned rather than re-served.
+			$cache_key = 'infynipay_icon_proxy_v2_' . md5($icon_url);
+			$cached = get_transient($cache_key);
+
+			if (is_array($cached) && !empty($cached['content_type']) && isset($cached['body'])) {
+				return array(
+					'content_type' => (string) $cached['content_type'],
+					'body' => (string) base64_decode($cached['body']),
+				);
+			}
+
+			$response = wp_remote_get(
+				$icon_url,
+				array(
+					'timeout' => 20,
+					// The host allowlist is only applied to the URL above. Following a
+					// redirect would hand that check away to whoever answers the request,
+					// and would also make this a route into the merchant's private network.
+					'redirection' => 0,
+					'reject_unsafe_urls' => true,
+					'limit_response_size' => self::PROVIDER_ICON_MAX_BYTES,
+				)
+			);
+
+			$status_code = wp_remote_retrieve_response_code($response);
+			$body = wp_remote_retrieve_body($response);
+
+			if (is_wp_error($response) || $status_code !== 200 || $body === '') {
+				$this->log('Provider icon request failed', 'warning', array(
+					'icon_url' => $icon_url,
+					'status_code' => $status_code,
+					'error' => is_wp_error($response) ? $response->get_error_message() : '',
+				));
+
+				return null;
+			}
+
+			if (strlen($body) > self::PROVIDER_ICON_MAX_BYTES) {
+				$this->log('Provider icon exceeded the size limit', 'warning', array(
+					'icon_url' => $icon_url,
+					'bytes' => strlen($body),
+				));
+
+				return null;
+			}
+
+			// The type is decided by the bytes. The upstream Content-Type header and the
+			// URL extension are both controlled by whoever serves the file, so neither
+			// gets a say in what this plugin tells the merchant's visitors it is.
+			$content_type = $this->sniff_provider_icon_content_type($body);
+
+			if ($content_type === '') {
+				$this->log('Provider icon is not a recognised image format', 'warning', array(
+					'icon_url' => $icon_url,
+				));
+
+				return null;
+			}
+
+			if ($content_type === 'image/svg+xml') {
+				$sanitized = $this->sanitize_provider_icon_svg($body);
+
+				if ($sanitized === null) {
+					$this->log('Provider icon SVG failed sanitisation', 'warning', array(
+						'icon_url' => $icon_url,
+					));
+
+					return null;
+				}
+
+				$body = $sanitized;
+			}
+
+			set_transient(
+				$cache_key,
+				array(
+					'content_type' => $content_type,
+					'body' => base64_encode($body),
+				),
+				6 * HOUR_IN_SECONDS
+			);
+
+			return array(
+				'content_type' => $content_type,
+				'body' => $body,
+			);
+		}
+
+		/**
+		 * Hosts permitted to serve provider icons through the proxy.
+		 *
+		 * Exact matches only. A suffix pattern such as `*.blob.core.windows.net` is not
+		 * a boundary: anyone can register an Azure Storage account, and this proxy
+		 * re-serves what it fetches from the *merchant's* origin, which would hand a
+		 * stranger the merchant's cookies and checkout DOM.
+		 *
+		 * @return string[] Lowercase hostnames.
+		 */
+		protected function get_allowed_provider_icon_hosts(): array
+		{
+			$hosts = array(
+				// The one storage account InfyniPay serves provider icons from.
+				'phpaymentstorageaccount.blob.core.windows.net',
+			);
+
+			/**
+			 * Filters the hosts allowed to serve provider icons.
+			 *
+			 * @param string[] $hosts Lowercase hostnames, compared by exact match.
+			 */
+			$hosts = apply_filters('infynipay_allowed_provider_icon_hosts', $hosts);
+			$normalized = array();
+
+			foreach ((array) $hosts as $host) {
+				$host = strtolower(trim((string) $host));
+
+				if ($host !== '') {
+					$normalized[] = $host;
+				}
+			}
+
+			return $normalized;
+		}
+
+		protected function is_allowed_provider_icon_url(string $icon_url): bool
+		{
+			$parts = wp_parse_url($icon_url);
+
+			if (!is_array($parts)) {
+				return false;
+			}
+
+			$scheme = isset($parts['scheme']) ? strtolower((string) $parts['scheme']) : '';
+			$host = isset($parts['host']) ? strtolower((string) $parts['host']) : '';
+
+			if ($scheme !== 'https' || $host === '') {
+				return false;
+			}
+
+			// Embedded credentials and off-port requests are not things a CDN fetch does.
+			if (isset($parts['user']) || isset($parts['pass'])) {
+				return false;
+			}
+
+			if (isset($parts['port']) && (int) $parts['port'] !== 443) {
+				return false;
+			}
+
+			return in_array($host, $this->get_allowed_provider_icon_hosts(), true);
+		}
+
+		/**
+		 * Determine the content type from the response bytes alone.
+		 *
+		 * @return string Empty string when the bytes are not a supported image.
+		 */
+		protected function sniff_provider_icon_content_type(string $body): string
+		{
+			if (strncmp($body, "\x89PNG\r\n\x1a\n", 8) === 0) {
+				return 'image/png';
+			}
+
+			if (strncmp($body, "\xff\xd8\xff", 3) === 0) {
+				return 'image/jpeg';
+			}
+
+			if (strncmp($body, 'GIF87a', 6) === 0 || strncmp($body, 'GIF89a', 6) === 0) {
+				return 'image/gif';
+			}
+
+			if (strncmp($body, 'RIFF', 4) === 0 && substr($body, 8, 4) === 'WEBP') {
+				return 'image/webp';
+			}
+
+			// An SVG may open with a BOM, an XML prolog, a doctype or comments before
+			// the root element.
+			$prolog = '(?:<\?xml[^>]*\?>|<!DOCTYPE[^>\[]*>|<!--.*?-->|\s)*';
+
+			if (preg_match('/^(?:\xEF\xBB\xBF)?' . $prolog . '<svg[\s>]/is', substr($body, 0, 2048))) {
+				return 'image/svg+xml';
+			}
+
+			return '';
+		}
+
+		/**
+		 * Strip everything scriptable out of an SVG.
+		 *
+		 * Elements are filtered against an allowlist; attributes are filtered for the
+		 * known script carriers. Returns null when the document cannot be parsed or is
+		 * not rooted at <svg>, so an unparseable file is never served.
+		 *
+		 * @return string|null
+		 */
+		protected function sanitize_provider_icon_svg(string $svg)
+		{
+			if (!class_exists('DOMDocument')) {
+				return null;
+			}
+
+			// An internal DTD subset is the XXE vector, and no logo needs one.
+			if (stripos($svg, '<!ENTITY') !== false) {
+				return null;
+			}
+
+			$previous_errors = libxml_use_internal_errors(true);
+			$document = new DOMDocument();
+			// No LIBXML_NOENT: entities must not be expanded. LIBXML_NONET blocks
+			// external fetches during parsing.
+			$loaded = $document->loadXML($svg, LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
+			libxml_clear_errors();
+			libxml_use_internal_errors($previous_errors);
+
+			if (!$loaded || !($document->documentElement instanceof DOMElement)) {
+				return null;
+			}
+
+			if (strtolower($document->documentElement->localName) !== 'svg') {
+				return null;
+			}
+
+			$this->sanitize_provider_icon_svg_element($document->documentElement);
+
+			// Serialising the root element alone drops any doctype or stray prolog.
+			$sanitized = $document->saveXML($document->documentElement);
+
+			return is_string($sanitized) && $sanitized !== '' ? $sanitized : null;
+		}
+
+		protected function sanitize_provider_icon_svg_element(DOMElement $element)
+		{
+			foreach (iterator_to_array($element->childNodes) as $child) {
+				if ($child instanceof DOMElement) {
+					if (!in_array(strtolower($child->localName), self::PROVIDER_ICON_SVG_ELEMENTS, true)) {
+						$element->removeChild($child);
+						continue;
+					}
+
+					$this->sanitize_provider_icon_svg_element($child);
+					continue;
+				}
+
+				if ($child instanceof DOMProcessingInstruction) {
+					$element->removeChild($child);
+				}
+			}
+
+			// <style> can pull in external resources through @import or url().
+			if (strtolower($element->localName) === 'style'
+				&& preg_match('/@import|url\s*\(|expression\s*\(/i', $element->textContent)) {
+				$element->textContent = '';
+			}
+
+			foreach (iterator_to_array($element->attributes) as $attribute) {
+				if (!$this->is_allowed_provider_icon_svg_attribute($attribute)) {
+					if ($attribute->namespaceURI !== null) {
+						$element->removeAttributeNS($attribute->namespaceURI, $attribute->localName);
+						continue;
+					}
+
+					$element->removeAttribute($attribute->name);
+				}
+			}
+		}
+
+		protected function is_allowed_provider_icon_svg_attribute(DOMAttr $attribute): bool
+		{
+			$name = strtolower($attribute->localName);
+			$value = (string) $attribute->value;
+
+			// Every event handler attribute.
+			if (strpos($name, 'on') === 0) {
+				return false;
+			}
+
+			// References may only point inside the same document (gradients, clip paths).
+			if ($name === 'href' || $name === 'xlink:href') {
+				return strncmp(ltrim($value), '#', 1) === 0;
+			}
+
+			// Entity- and whitespace-obfuscated scheme tricks, e.g. "java\nscript:".
+			$collapsed = strtolower(preg_replace('/[\s\x00-\x20]+/', '', $value));
+
+			if (strpos($collapsed, 'javascript:') !== false
+				|| strpos($collapsed, 'vbscript:') !== false
+				|| strpos($collapsed, 'data:text/html') !== false) {
+				return false;
+			}
+
+			if ($name === 'style' && preg_match('/@import|url\s*\(|expression\s*\(|-moz-binding/i', $value)) {
+				return false;
+			}
+
+			return true;
+		}
+
+		public function handle_provider_icon_proxy()
+		{
+			$encoded_url = isset($_GET['url']) ? sanitize_text_field(wp_unslash($_GET['url'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Public AJAX icon proxy; reads a URL param to fetch a provider image, no data is saved.
+			$padding = strlen($encoded_url) % 4;
+
+			if ($padding > 0) {
+				$encoded_url .= str_repeat('=', 4 - $padding);
+			}
+
+			$icon_url = base64_decode(strtr($encoded_url, '-_', '+/'), true);
+
+			if (!is_string($icon_url) || $icon_url === '' || !$this->is_allowed_provider_icon_url($icon_url)) {
+				status_header(400);
+				exit;
+			}
+
+			$icon = $this->fetch_provider_icon($icon_url);
+
+			if ($icon === null) {
+				status_header(404);
+				exit;
+			}
+
+			status_header(200);
+			header('Content-Type: ' . $icon['content_type']);
+			header('Content-Length: ' . strlen($icon['body']));
+			// Last line of defence. This response is served from the merchant's own
+			// origin, so if anything scriptable ever survived the checks above, `sandbox`
+			// still drops the document into an opaque origin with scripting disabled: no
+			// access to the shop's cookies, session or checkout DOM.
+			header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox");
+			header('X-Content-Type-Options: nosniff');
+			header('Content-Disposition: inline');
+			header('Cross-Origin-Resource-Policy: same-site');
+			header('Referrer-Policy: no-referrer');
+			header('Cache-Control: public, max-age=21600');
+			echo $icon['body']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Binary image data validated by fetch_provider_icon(); HTML escaping would corrupt it.
+			exit;
+		}
+
+		public function add_sandbox_badge_to_title($title, $gateway_id)
+		{
+			if ($gateway_id !== $this->id) {
+				return $title;
+			}
+
+			// Do not inject HTML during AJAX/REST requests (e.g. checkout order creation)
+			// to prevent the raw <span> being persisted in the order's payment_method_title.
+			if (is_admin() || wp_doing_ajax() || (defined('REST_REQUEST') && REST_REQUEST)) {
+				return $title;
+			}
+
+			return esc_html($title) . ' <span class="infynipay-sandbox-badge infynipay-sandbox-badge--inline">' . esc_html__( 'Sandbox', 'infynipay' ) . '</span>';
+		}
+
+		public function add_sandbox_badge_to_order_payment_title($title, $order)
+		{
+			// Strip any HTML that may have been previously stored in the order record
+			// (caused by the gateway title filter firing during order creation).
+			$clean_title = wp_strip_all_tags($title);
+
+			if (is_admin()) {
+				return $clean_title;
+			}
+
+			if (!$order instanceof WC_Order || $order->get_payment_method() !== $this->id) {
+				return $clean_title;
+			}
+
+			return esc_html($clean_title) . ' <span class="infynipay-sandbox-badge infynipay-sandbox-badge--inline">' . esc_html__( 'Sandbox', 'infynipay' ) . '</span>';
+		}
+
+		public function payment_fields()
+		{
+			$supported_methods = $this->get_supported_checkout_methods_for_display();
+			?>
+			<div class="infynipay-checkout-card infynipay-checkout-card--classic">
+				<?php if (!empty($supported_methods)) : ?>
+					<?php $this->render_supported_provider_chips($supported_methods); ?>
+				<?php endif; ?>
+			</div>
+			<?php
+		}
+
+		protected function render_supported_provider_chips(array $supported_methods, string $strip_class = ''): void
+		{
+			if (empty($supported_methods)) {
+				return;
+			}
+			$strip_classes = trim('infynipay-provider-strip ' . $strip_class);
+			?>
+			<div class="<?php echo esc_attr($strip_classes); ?>" aria-label="<?php esc_attr_e( 'Supported payment providers', 'infynipay' ); ?>">
+				<?php foreach ($supported_methods as $method) : ?>
+					<?php if (($method['type'] ?? '') === 'credit_card') : ?>
+						<div class="infynipay-provider-chip infynipay-provider-chip--card" title="<?php esc_attr_e( 'Credit card', 'infynipay' ); ?>">
+							<span class="infynipay-provider-chip__card-icon" aria-hidden="true"></span>
+							<span class="infynipay-provider-chip__label"><?php esc_html_e( 'Credit card', 'infynipay' ); ?></span>
+						</div>
+					<?php else : ?>
+						<?php
+						$label = (string) ($method['label'] ?? '');
+						$icon_url = !empty($method['icon_light']) ? (string) $method['icon_light'] : (string) ($method['icon_dark'] ?? '');
+						if ($label === '' && $icon_url === '') {
+							continue;
+						}
+						?>
+						<div class="infynipay-provider-chip<?php echo $icon_url !== '' ? ' infynipay-provider-chip--loading' : ''; ?>" title="<?php echo esc_attr($label); ?>">
+							<?php if ($icon_url !== '') : ?>
+								<img class="infynipay-provider-chip__logo"
+									data-src="<?php echo esc_url($icon_url); ?>"
+									alt="<?php echo esc_attr($label); ?>"
+									width="84" height="26">
+							<?php endif; ?>
+							<span class="infynipay-provider-chip__label" <?php if ($icon_url !== '') : ?>style="display:none"<?php endif; ?>><?php echo esc_html($label); ?></span>
+						</div>
+					<?php endif; ?>
+				<?php endforeach; ?>
+			</div>
+			<?php
+		}
+
+		public function get_supported_checkout_methods_for_display()
+		{
+			$methods = $this->app_service->get_payment_profiles_checkout_methods(
+				$this->app_id,
+				$this->token
+			);
+
+			foreach ($methods as &$method) {
+				if (($method['type'] ?? '') === 'credit_card') {
+					continue;
+				}
+				if (!empty($method['icon_light'])) {
+					$method['icon_light'] = $this->get_provider_icon_proxy_url($method['icon_light']);
+				}
+				if (!empty($method['icon_dark'])) {
+					$method['icon_dark'] = $this->get_provider_icon_proxy_url($method['icon_dark']);
+				}
+			}
+			unset($method);
+
+			return $methods;
+		}
+
+		protected function get_admin_all_providers_for_display(): array
+		{
+			$providers = $this->app_service->get_all_providers(false);
+			$display_methods = array();
+
+			foreach ($providers as $provider) {
+				$title = isset($provider['title']) ? (string) $provider['title'] : '';
+				$icon_light = isset($provider['icon_light']) ? (string) $provider['icon_light'] : '';
+				$icon_dark = isset($provider['icon_dark']) ? (string) $provider['icon_dark'] : '';
+
+				if ($title === '' || ($icon_light === '' && $icon_dark === '')) {
+					continue;
+				}
+
+				if ($icon_light !== '') {
+					$icon_light = $this->get_provider_icon_proxy_url($icon_light);
+				}
+
+				if ($icon_dark !== '') {
+					$icon_dark = $this->get_provider_icon_proxy_url($icon_dark);
+				}
+
+				$display_methods[] = array(
+					'type' => 'provider_hosted_page',
+					'label' => $title,
+					'icon_light' => $icon_light,
+					'icon_dark' => $icon_dark,
+				);
+			}
+
+			return $display_methods;
+		}
+
+		protected function get_admin_provider_methods_for_display(bool $force_provider_refresh = false): array
+		{
+			$methods = $this->get_supported_checkout_methods_for_display();
+
+			if (!empty($methods)) {
+				return $methods;
+			}
+
+			return $this->get_admin_all_providers_for_display();
+		}
+
+		/**
+		 * Returns available InfyniPay providers for display in the WooCommerce Payments list.
+		 * WooCommerce's PaymentGateway provider reads this method and renders the icons.
+		 * The React component shows the first ~5 icons and collapses the rest into a "+N" badge.
+		 *
+		 * @param string $country_code Optional ISO 3166-1 alpha-2 country code (unused, included for interface compatibility).
+		 * @return array
+		 */
+		public function get_recommended_payment_methods(string $country_code = ''): array
+		{
+			// Must return empty array. WooCommerce's React Payments list uses a non-empty
+			// recommended_payment_methods array as a signal to show the "WooPayments update
+			// required" modal when the account is not connected — a WooPayments-exclusive
+			// flow that must not apply to third-party gateways like InfyniPay.
+			// Provider icons are injected independently via enqueue_payments_list_provider_logos().
+			return array();
+		}
+
+		public function enqueue_admin_assets()
+		{
+			if (
+				!$this->is_infynipay_settings_page() &&
+				!$this->is_infynipay_payments_list_page() &&
+				!$this->is_order_edit_page()
+			) {
+				return;
+			}
+
+			wp_enqueue_style(
+				'infynipay-admin-settings',
+				plugins_url('assets/css/infynipay-admin.css', __FILE__),
+				array(),
+				'1.2.0'
+			);
+
+			if ($this->is_infynipay_settings_page()) {
+				wp_register_script( 'infynipay-admin-settings', false, array(), '1.0.0', true );
+				wp_enqueue_script( 'infynipay-admin-settings' );
+				wp_add_inline_script(
+					'infynipay-admin-settings',
+					'(function () {
+	var imgs = document.querySelectorAll(\'.infynipay-provider-chip--loading img[data-src]\');
+	imgs.forEach(function (img) {
+		img.onload = function () {
+			this.parentNode.classList.remove(\'infynipay-provider-chip--loading\');
+		};
+		img.onerror = function () {
+			this.parentNode.classList.remove(\'infynipay-provider-chip--loading\');
+			this.style.display = \'none\';
+			var lb = this.parentNode.querySelector(\'.infynipay-provider-chip__label\');
+			if (lb) lb.style.display = \'\';
+		};
+		img.src = img.dataset.src;
+	});
+})()'
+				);
+			}
+
+			if ($this->is_infynipay_payments_list_page()) {
+				$this->enqueue_payments_list_provider_logos();
+			}
+		}
+
+		protected function enqueue_payments_list_provider_logos()
+		{
+			$methods = $this->get_admin_provider_methods_for_display();
+
+			$js_providers = array();
+			$seen = array();
+
+			foreach ($methods as $method) {
+				$title = isset($method['label']) ? (string) $method['label'] : '';
+				$icon = !empty($method['icon_light']) ? $method['icon_light'] : ($method['icon_dark'] ?? '');
+				$icon = $this->get_provider_icon_proxy_url($icon);
+
+				if ($title === '' || $icon === '' || isset($seen[$title])) {
+					continue;
+				}
+
+				$seen[$title] = true;
+				$js_providers[] = array(
+					'title' => $title,
+					'icon'  => $icon,
+				);
+			}
+
+			$this->log('Payments list provider strip', 'info', array(
+				'methods_count'   => count($methods),
+				'providers_count' => count($js_providers),
+			));
+
+			$providers_json = wp_json_encode($js_providers, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_QUOT);
+			$max_visible = 5;
+			$is_testmode = $this->testmode ? 'true' : 'false';
+
+			$script = sprintf(
+				"(function () {\n" .
+				"\tvar providers = %s;\n" .
+				"\tvar MAX_VISIBLE = %d;\n" .
+				"\tvar isTestMode = %s;\n" .
+				"\n" .
+				"\tfunction buildStrip() {\n" .
+				"\t\tvar wrap = document.createElement('div');\n" .
+				"\t\twrap.className = 'infynipay-provider-strip-admin';\n" .
+				"\n" .
+				"\t\tvar envBadge = document.createElement('span');\n" .
+				"\t\tenvBadge.className = isTestMode\n" .
+				"\t\t\t? 'infynipay-env-badge infynipay-env-badge--sandbox'\n" .
+				"\t\t\t: 'infynipay-env-badge infynipay-env-badge--live';\n" .
+				"\t\tenvBadge.textContent = isTestMode ? 'Test Mode' : 'Live';\n" .
+				"\t\twrap.appendChild(envBadge);\n" .
+				"\n" .
+				"\t\tvar visible = providers.slice(0, MAX_VISIBLE);\n" .
+				"\t\tvar overflow = providers.length - MAX_VISIBLE;\n" .
+				"\n" .
+				"\t\tvisible.forEach(function (p) {\n" .
+				"\t\t\tvar img = document.createElement('img');\n" .
+				"\t\t\timg.src = p.icon;\n" .
+				"\t\t\timg.alt = p.title;\n" .
+				"\t\t\timg.title = p.title;\n" .
+				"\t\t\timg.className = 'infynipay-provider-strip-admin__icon';\n" .
+				"\t\t\twrap.appendChild(img);\n" .
+				"\t\t});\n" .
+				"\n" .
+				"\t\tif (overflow > 0) {\n" .
+				"\t\t\tvar badge = document.createElement('span');\n" .
+				"\t\t\tbadge.className = 'infynipay-provider-strip-admin__overflow';\n" .
+				"\t\t\tbadge.textContent = '+' + overflow;\n" .
+				"\t\t\twrap.appendChild(badge);\n" .
+				"\t\t}\n" .
+				"\n" .
+				"\t\treturn wrap;\n" .
+				"\t}\n" .
+				"\n" .
+				"\tfunction findInfynipayRow() {\n" .
+				"\t\tvar row = document.getElementById('infynipay');\n" .
+				"\t\tif (row) { return row; }\n" .
+				"\t\tvar settingsLink = document.querySelector('a[href*=\"page=wc-settings\"][href*=\"section=infynipay\"]');\n" .
+				"\t\tif (settingsLink) {\n" .
+				"\t\t\treturn settingsLink.closest('.woocommerce-item__payment-gateway, .woocommerce-list__item');\n" .
+				"\t\t}\n" .
+				"\t\treturn null;\n" .
+				"\t}\n" .
+				"\n" .
+				"\tfunction attachStrip() {\n" .
+				"\t\tvar row = findInfynipayRow();\n" .
+				"\t\tif (!row) { return; }\n" .
+				"\t\tif (row.querySelector(':scope > .woocommerce-list__item-inner .infynipay-provider-strip-admin')) { return; }\n" .
+				"\t\tvar desc = row.querySelector('.woocommerce-list__item-content');\n" .
+				"\t\tif (!desc || !desc.parentNode) { return; }\n" .
+				"\t\tdesc.parentNode.insertBefore(buildStrip(), desc.nextSibling);\n" .
+				"\t}\n" .
+				"\n" .
+				"\tattachStrip();\n" .
+				"\tvar observer = new MutationObserver(attachStrip);\n" .
+				"\tobserver.observe(document.body, { childList: true, subtree: true });\n" .
+				"})();",
+				$providers_json,
+				$max_visible,
+				$is_testmode
+			);
+
+			wp_enqueue_script('jquery');
+			wp_add_inline_script('jquery', $script, 'after');
+		}
+
+		public function enqueue_checkout_assets()
+		{
+			if (!function_exists('is_checkout')) {
+				return;
+			}
+
+			$is_checkout = is_checkout();
+			$is_checkout_pay = function_exists('is_checkout_pay_page') && is_checkout_pay_page();
+			$is_view_order = function_exists('is_wc_endpoint_url') && is_wc_endpoint_url('view-order');
+
+			if (!$is_checkout && !$is_checkout_pay && !$is_view_order) {
+				return;
+			}
+
+			wp_enqueue_style(
+				'infynipay-checkout',
+				plugins_url('assets/css/infynipay-checkout.css', __FILE__),
+				array(),
+				'1.0.3'
+			);
+		}
+
+		protected function is_infynipay_settings_page()
+		{
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only page-detection helper; only checks URL params to determine which admin screen is active, no data is processed.
+			$page    = isset($_GET['page'])    ? sanitize_text_field(wp_unslash($_GET['page']))    : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$tab     = isset($_GET['tab'])     ? sanitize_text_field(wp_unslash($_GET['tab']))     : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$section = isset($_GET['section']) ? sanitize_text_field(wp_unslash($_GET['section'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+			return $page === 'wc-settings'
+				&& in_array($tab, array('checkout', 'payment-gateways'), true)
+				&& $section === $this->id;
+		}
+
+		protected function is_infynipay_payments_list_page()
+		{
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only page-detection helper; only checks URL params to determine which admin screen is active, no data is processed.
+			$page    = isset($_GET['page'])    ? sanitize_text_field(wp_unslash($_GET['page']))    : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$tab     = isset($_GET['tab'])     ? sanitize_text_field(wp_unslash($_GET['tab']))     : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$section = isset($_GET['section']) ? sanitize_text_field(wp_unslash($_GET['section'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+			return $page === 'wc-settings'
+				&& in_array($tab, array('checkout', 'payment-gateways'), true)
+				&& $section === '';
+		}
+
+		protected function is_infynipay_enable_route()
+		{
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only page-detection helper; only checks URL params to determine which admin screen is active, no data is processed.
+			$page    = isset($_GET['page'])    ? sanitize_text_field(wp_unslash($_GET['page']))    : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$tab     = isset($_GET['tab'])     ? sanitize_text_field(wp_unslash($_GET['tab']))     : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			$section = isset($_GET['section']) ? sanitize_text_field(wp_unslash($_GET['section'])) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+			return $page === 'wc-settings'
+				&& in_array($tab, array('checkout', 'payment-gateways'), true)
+				&& $section === $this->id
+				&& isset($_GET['toggle_enabled']); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		}
+
+		protected function is_order_edit_page(): bool
+		{
+			$screen = function_exists('get_current_screen') ? get_current_screen() : null;
+			if (!$screen) {
+				return false;
+			}
+			// HPOS order edit: ?page=wc-orders&action=edit&id=N
+			if ($screen->id === 'woocommerce_page_wc-orders') {
+				$action = isset($_GET['action']) ? sanitize_key($_GET['action']) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only page detection for asset enqueuing.
+				return $action === 'edit';
+			}
+			// Classic post-based order edit
+			return $screen->id === 'shop_order';
+		}
+
+		protected function get_public_base_url(): string
+		{
+			$request_host = $this->get_request_public_host();
+			$forwarded_proto = $this->get_forwarded_server_value('HTTP_X_FORWARDED_PROTO');
+			$is_https = (
+				(!empty($_SERVER['HTTPS']) && sanitize_key(wp_unslash($_SERVER['HTTPS'])) !== 'off')
+				|| $forwarded_proto === 'https'
+			);
+			$home_path = (string) wp_parse_url(home_url('/'), PHP_URL_PATH);
+			$home_path = $home_path !== '' ? '/' . trim($home_path, '/') : '';
+
+			if ($request_host !== '' && !in_array($request_host, array('localhost', '127.0.0.1', '::1'), true)) {
+				return ($is_https ? 'https://' : 'http://') . $request_host . $home_path;
+			}
+
+			$override = defined('INFYNIPAY_PUBLIC_BASE_URL') ? (string) INFYNIPAY_PUBLIC_BASE_URL : '';
+
+			$override = trim((string) apply_filters('infynipay_public_base_url', $override));
+
+			if ($override !== '') {
+				return untrailingslashit($override);
+			}
+
+			return untrailingslashit(home_url('/'));
+		}
+
+		protected function get_request_public_host(): string
+		{
+			$forwarded_host = $this->get_forwarded_server_value('HTTP_X_FORWARDED_HOST');
+
+			if ($forwarded_host !== '') {
+				return $forwarded_host;
+			}
+
+			$original_host = $this->get_forwarded_server_value('HTTP_X_ORIGINAL_HOST');
+
+			if ($original_host !== '') {
+				return $original_host;
+			}
+
+			$host = isset($_SERVER['HTTP_HOST']) ? strtolower(sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST']))) : '';
+
+			return $host !== '' ? preg_replace('/:\\d+$/', '', $host) : '';
+		}
+
+		protected function get_forwarded_server_value(string $key): string
+		{
+			if (!isset($_SERVER[$key])) {
+				return '';
+			}
+
+			$value = strtolower(sanitize_text_field(wp_unslash($_SERVER[$key])));
+
+			if ($value === '') {
+				return '';
+			}
+
+			$parts = array_filter(array_map('trim', explode(',', $value)));
+			$value = $parts !== array() ? (string) end($parts) : $value;
+
+			return preg_replace('/:\\d+$/', '', $value);
+		}
+
+		protected function build_public_wc_api_url(string $endpoint): string
+		{
+			return add_query_arg(
+				array(
+					'wc-api' => $endpoint,
+				),
+				trailingslashit($this->get_public_base_url())
+			);
+		}
+
+		protected function maybe_log_local_callback_url(string $url, string $context): void
+		{
+			$host = strtolower((string) wp_parse_url($url, PHP_URL_HOST));
+
+			if ($host === '' || $host === 'localhost' || $host === '127.0.0.1' || $host === '::1') {
+				$this->log('InfyniPay callback URL is not publicly reachable', 'warning', array(
+					'context' => $context,
+					'url' => $url,
+				));
+			}
+		}
+
+		protected function is_infynipay_order($order): bool
+		{
+			return $order instanceof WC_Order && $order->get_payment_method() === $this->id;
+		}
+
+		protected function get_order_pay_page_order()
+		{
+			if (!function_exists('is_checkout_pay_page') || !is_checkout_pay_page()) {
+				return null;
+			}
+
+			$order_id = function_exists('get_query_var') ? absint(get_query_var('order-pay')) : 0;
+
+			if ($order_id <= 0) {
+				return null;
+			}
+
+			return wc_get_order($order_id);
+		}
+
+		public function restrict_order_pay_gateways_to_infynipay($gateways)
+		{
+			$order = $this->get_order_pay_page_order();
+
+			if (!$this->is_infynipay_order($order)) {
+				return $gateways;
+			}
+
+			return isset($gateways[$this->id]) ? array($this->id => $gateways[$this->id]) : array();
+		}
+
+		public function prevent_terminal_infynipay_order_payment($needs_payment, $order, $valid_order_statuses)
+		{
+			if (!$needs_payment || !$this->is_infynipay_order($order)) {
+				return $needs_payment;
+			}
+
+			$payment_details = $this->get_infynipay_payment_details_for_order($order);
+
+			if (is_wp_error($payment_details) || empty($payment_details)) {
+				return $needs_payment;
+			}
+
+			$payment_state = (string) ($payment_details['paymentState'] ?? '');
+
+			if (!$this->is_terminal_infynipay_payment_state($payment_state)) {
+				return $needs_payment;
+			}
+
+			$this->log('InfyniPay order payment blocked because payment state is terminal', 'info', array(
+				'order_id' => $order->get_id(),
+				'payment_state' => $payment_state,
+			));
+
+			return false;
+		}
+
+		protected function get_infynipay_payment_details_for_order($order)
+		{
+			if (!$this->is_infynipay_order($order)) {
+				return array();
+			}
+
+			return $this->payment_service->get_payment_by_reference_id($this->app_id, $this->token, $order->get_id());
+		}
+
+		protected function is_terminal_infynipay_payment_state(string $payment_state): bool
+		{
+			$normalized_state = strtolower(trim($payment_state));
+
+			return in_array($normalized_state, array('capture', 'captured', 'failed', 'refunded', 'disputed'), true);
+		}
+
+		protected function is_processing_infynipay_payment_state(string $payment_state): bool
+		{
+			return $payment_state !== '' && !$this->is_terminal_infynipay_payment_state($payment_state);
+		}
+
+		public function render_infynipay_order_payment_box($order): void
+		{
+			if (!$this->is_infynipay_order($order)) {
+				return;
+			}
+
+			$is_view_order    = function_exists('is_wc_endpoint_url') && is_wc_endpoint_url('view-order');
+			$is_order_received = function_exists('is_wc_endpoint_url') && is_wc_endpoint_url('order-received');
+
+			if (!$is_view_order && !$is_order_received) {
+				return;
+			}
+
+			$payment_details = $this->get_infynipay_payment_details_for_order($order);
+
+			if (is_wp_error($payment_details) || empty($payment_details)) {
+				return;
+			}
+
+			$payment_state = (string) ($payment_details['paymentState'] ?? '');
+
+			if (!$this->is_processing_infynipay_payment_state($payment_state)) {
+				return;
+			}
+
+			$redirect_url = (string) ($payment_details['redirectUrl'] ?? '');
+
+			if ($redirect_url === '') {
+				$redirect_url = (string) $order->get_meta('_payment_service_redirect_url');
+			}
+
+			if ($redirect_url === '') {
+				return;
+			}
+			?>
+			<section class="ph-pending-card" aria-label="<?php esc_attr_e( 'Complete your InfyniPay payment', 'infynipay' ); ?>">
+				<div class="ph-pending-card__header">
+					<div class="ph-pending-card__brand">
+						<span class="ph-pending-card__brand-dot" aria-hidden="true"></span>
+						<span class="ph-pending-card__brand-name">InfyniPay</span>
+					</div>
+					<span class="ph-pending-card__badge">
+						<span class="ph-pending-card__badge-dot" aria-hidden="true"></span>
+						<?php esc_html_e( 'Awaiting payment', 'infynipay' ); ?>
+					</span>
+				</div>
+				<div class="ph-pending-card__body">
+					<div class="ph-pending-card__icon" aria-hidden="true">
+						<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+					</div>
+					<div class="ph-pending-card__copy">
+						<h2 class="ph-pending-card__title"><?php esc_html_e( 'Your payment is pending', 'infynipay' ); ?></h2>
+						<p class="ph-pending-card__desc"><?php esc_html_e( 'Your order is reserved and waiting for payment confirmation. Return to InfyniPay to securely complete this payment.', 'infynipay' ); ?></p>
+					</div>
+				</div>
+				<div class="ph-pending-card__footer">
+					<a class="ph-pending-card__cta" href="<?php echo esc_url($redirect_url); ?>">
+						<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+						<?php esc_html_e( 'Continue to secure payment', 'infynipay' ); ?>
+						<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+					</a>
+				</div>
+			</section>
+			<?php
+		}
+
+		public function render_manual_refund_admin_notice(): void
+		{
+			// Detect current order — supports both classic posts editor and HPOS
+			$order_id = 0;
+			if (isset($_GET['post']) && 'shop_order' === get_post_type((int) $_GET['post'])) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only order detection to display a contextual admin notice; no data is saved.
+				$order_id = (int) $_GET['post']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			} elseif (
+				isset($_GET['id'], $_GET['page']) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				&& 'wc-orders' === sanitize_key($_GET['page']) // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			) {
+				$order_id = (int) $_GET['id']; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			}
+
+			if (!$order_id) {
+				return;
+			}
+
+			$order = wc_get_order($order_id);
+			if (!$order || !$this->is_infynipay_order($order)) {
+				return;
+			}
+
+			// Blue info box: automatic refund is supported by the provider.
+			if (
+				$order->get_meta('_infynipay_can_refund') === '1'
+				&& !in_array($order->get_status(), ['refunded', 'cancelled', 'failed'], true)
+			) {
+				$provider_name  = $order->get_meta('_infynipay_provider_name');
+				$provider_label = !empty($provider_name) ? $provider_name : __( 'the payment provider', 'infynipay' );
+				?>
+				<div class="notice notice-info" style="background-color:#e8f4fd;border-left-color:#2196f3;border-left-width:4px;">
+					<p>
+						<strong>&#8505; <?php esc_html_e( 'InfyniPay — Automatic refund supported', 'infynipay' ); ?></strong><br>
+						<?php
+						printf(
+							/* translators: %s: payment provider name, wrapped in <strong> tags. */
+							esc_html__( 'This payment supports automatic refunds via %s. If you process a refund, the funds will be returned to the customer’s original payment method or bank account automatically.', 'infynipay' ),
+							'<strong>' . esc_html( $provider_label ) . '</strong>'
+						);
+						?>
+					</p>
+				</div>
+				<?php
+			}
+
+			// Yellow warning box: provider does not support automatic refunds — manual action needed.
+			if ($order->get_meta('_infynipay_manual_refund_required') === '1') {
+				?>
+				<div class="notice notice-warning" style="background-color:#fff8e1;border-left-color:#f0ad4e;border-left-width:4px;">
+					<p>
+						<strong>&#9888; <?php esc_html_e( 'InfyniPay — Manual refund required', 'infynipay' ); ?></strong><br>
+						<?php
+						echo wp_kses(
+							__( 'This payment provider does not support automatic refunds. The order has been marked as refunded in InfyniPay, but <strong>no money has been returned to the customer automatically</strong>. Please manually transfer the refund amount to the customer’s bank account or original payment method.', 'infynipay' ),
+							array( 'strong' => array() )
+						);
+						?>
+					</p>
+				</div>
+				<?php
+			}
+		}
+
+		public function render_admin_order_payment_id($order): void
+		{
+			if (!$this->is_infynipay_order($order)) {
+				return;
+			}
+
+			$payment_id = $order->get_meta('_payment_service_payment_id');
+
+			if (empty($payment_id)) {
+				return;
+			}
+
+			$detail_url  = rtrim($this->infynipay_panel_url, '/') . '/'
+				. rawurlencode($this->app_id)
+				. '/payments/detail?appId=' . rawurlencode($this->app_id)
+				. '&paymentId=' . rawurlencode($payment_id);
+			$logo_url    = plugins_url('assets/images/infynipay-white.webp', __FILE__);
+			?>
+			<div class="infynipay-order-card">
+				<div class="infynipay-order-card__header">
+					<img class="infynipay-order-card__logo"
+						src="<?php echo esc_url($logo_url); ?>"
+						alt="InfyniPay"
+						width="110" height="22">
+					<span class="infynipay-order-card__badge">
+						<span class="infynipay-order-card__badge-dot" aria-hidden="true"></span>
+						<?php esc_html_e( 'Payment Gateway', 'infynipay' ); ?>
+					</span>
+				</div>
+				<div class="infynipay-order-card__body">
+					<span class="infynipay-order-card__label"><?php esc_html_e( 'Payment ID', 'infynipay' ); ?></span>
+					<div class="infynipay-order-card__id-row">
+						<span class="infynipay-order-card__id"><?php echo esc_html($payment_id); ?></span>
+					</div>
+					<a href="<?php echo esc_url($detail_url); ?>"
+					   class="infynipay-order-card__cta"
+					   target="_blank"
+					   rel="noopener noreferrer">
+						<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+						<?php esc_html_e( 'View in InfyniPay Console', 'infynipay' ); ?>
+					</a>
+				</div>
+			</div>
+			<?php
+		}
+
+		protected function extract_provider_name(array $data): string
+		{
+			foreach (['providerName', 'paymentMethod', 'providerTitle'] as $field) {
+				if (isset($data[$field]) && is_string($data[$field]) && $data[$field] !== '') {
+					return $data[$field];
+				}
+			}
+			if (isset($data['provider'])) {
+				if (is_string($data['provider']) && $data['provider'] !== '') {
+					return $data['provider'];
+				}
+				if (is_array($data['provider']) && isset($data['provider']['name']) && $data['provider']['name'] !== '') {
+					return (string) $data['provider']['name'];
+				}
+			}
+			return '';
+		}
+
+		protected function is_local_callback_base_url(): bool
+		{
+			$host = strtolower((string) wp_parse_url($this->get_public_base_url(), PHP_URL_HOST));
+
+			return $host === '' || in_array($host, array('localhost', '127.0.0.1', '::1'), true);
+		}
+
+		public function guard_infynipay_enable_route()
+		{
+			if (!$this->is_infynipay_enable_route()) {
+				return;
+			}
+
+			$this->log('Blocked InfyniPay enable toggle route from WooCommerce payments list', 'warning', array(
+				'page' => 'wc-settings',
+				'tab' => isset($_GET['tab']) ? sanitize_text_field(wp_unslash($_GET['tab'])) : '', // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only logging of the current tab param; no data is saved.
+			));
+
+			$redirect_url = remove_query_arg('toggle_enabled');
+
+			if (!empty($redirect_url) && wp_safe_redirect($redirect_url)) {
+				exit;
+			}
+		}
+
+		public function setup_handler()
+		{
+			// Verify the acting user has permission to manage WooCommerce settings.
+			if (!current_user_can('manage_woocommerce')) {
+				wp_die(
+					esc_html__( 'You do not have permission to perform this action.', 'infynipay' ),
+					esc_html__( 'Forbidden', 'infynipay' ),
+					array( 'response' => 403 )
+				);
+			}
+
+			// Verify the state nonce to prevent CSRF on the OAuth-style callback.
+			$state = isset($_GET['infynipay_state']) ? sanitize_text_field(wp_unslash($_GET['infynipay_state'])) : '';
+			if (!wp_verify_nonce($state, 'infynipay_setup_state')) {
+				wp_die(
+					esc_html__( 'Invalid or expired setup request. Please start the connection again from the InfyniPay settings page.', 'infynipay' ),
+					esc_html__( 'InfyniPay Setup Error', 'infynipay' ),
+					array( 'response' => 400, 'back_link' => true )
+				);
+			}
+
+			// Read params
+			$license_id = isset($_GET['licenseId']) ? sanitize_text_field(wp_unslash($_GET['licenseId'])) : '';
+			$authorization_code = isset($_GET['authorizationCode']) ? sanitize_text_field(wp_unslash($_GET['authorizationCode'])) : '';
+
+			$this->log('Starting setup process. LicenseId: ' . $license_id, 'info');
+
+			// Validate params
+			if (empty($authorization_code) || empty($license_id)) {
+				$this->log('LicenseId or AuthorizationCode is empty', 'error');
+
+				$this->infynipay_render_admin_error_page(
+					'missing_parameters',
+					__( 'authorizationCode and licenseId are required.', 'infynipay' )
+				);
+				exit;
+			}
+
+			// Save license_id to DB
+			$option_key = 'woocommerce_' . $this->id . '_settings';
+			$settings = get_option($option_key, array());
+
+			if (!is_array($settings)) {
+				$settings = array();
+			}
+
+			$settings['license_id'] = $license_id;
+			update_option($option_key, $settings);
+
+			$this->log('LicenseId saved', 'info');
+
+			// Get token
+			$app_detail = $this->app_service->get_token(
+				$license_id,
+				sanitize_text_field($authorization_code)
+			);
+
+			if (is_wp_error($app_detail)) {
+				$this->infynipay_render_admin_error_page(
+					$app_detail->get_error_code(),
+					$app_detail->get_error_message()
+				);
+				exit;
+			}
+
+			// Save app details to DB
+			$settings['sandbox_app_id'] = sanitize_text_field($app_detail['sandbox_app_id']);
+			$settings['sandbox_token'] = sanitize_text_field($app_detail['sandbox_token']);
+			$settings['live_app_id'] = sanitize_text_field($app_detail['live_app_id']);
+			$settings['live_token'] = sanitize_text_field($app_detail['live_token']);
+			update_option($option_key, $settings);
+			update_option('infynipay_setup_auto_enabled', '1');
+
+			$this->log('App details saved; gateway not auto-enabled', 'info');
+			$this->flush_checkout_methods_cache($app_detail['sandbox_app_id'], $app_detail['live_app_id']);
+
+			// Set payment webhook in payment service
+			$webhook_url = $this->build_public_wc_api_url('payment_webhook');
+			$this->maybe_log_local_callback_url($webhook_url, 'setup_webhook');
+			$webhook_tokens = $this->webhook_token_generator($option_key, $settings);
+
+			// Sandbox
+			$sandbox_webhook_result = $this->app_service->set_payment_webhook(
+				$webhook_url,
+				$webhook_tokens['sandbox_webhook_token'],
+				$app_detail['sandbox_app_id'],
+				$app_detail['sandbox_token']
+			);
+
+			if (is_wp_error($sandbox_webhook_result)) {
+				$this->infynipay_render_admin_error_page(
+					$sandbox_webhook_result->get_error_code(),
+					$sandbox_webhook_result->get_error_message()
+				);
+				exit;
+			}
+
+			// Live
+			$live_webhook_result = $this->app_service->set_payment_webhook(
+				$webhook_url,
+				$webhook_tokens['live_webhook_token'],
+				$app_detail['live_app_id'],
+				$app_detail['live_token']
+			);
+
+			if (is_wp_error($live_webhook_result)) {
+				$this->infynipay_render_admin_error_page(
+					$live_webhook_result->get_error_code(),
+					$live_webhook_result->get_error_message()
+				);
+				exit;
+			}
+
+			$redirect_url = add_query_arg(
+				array(
+					'infynipay_setup' => 'success',
+				),
+				admin_url('admin.php?page=wc-settings&tab=checkout&section=' . $this->id)
+			);
+
+			wp_safe_redirect($redirect_url);
+
+			$this->log('Setup completed successfully', 'info');
+
+			exit;
+		}
+
+		// Method that processes the payment
+		function process_payment($order_id)
+		{
+			$order = wc_get_order($order_id);
+
+			$payment_id = $order->get_meta('_payment_service_payment_id');
+			$redirect_url = $order->get_meta('_payment_service_redirect_url');
+
+			if ($payment_id && $redirect_url) {
+				$payment_details  = $this->get_infynipay_payment_details_for_order($order);
+				$payment_state    = !is_wp_error($payment_details) ? (string) ($payment_details['paymentState'] ?? '') : '';
+				$fresh_redirect   = !is_wp_error($payment_details) ? (string) ($payment_details['redirectUrl'] ?? '') : '';
+
+				if ($payment_state !== '' && $this->is_terminal_infynipay_payment_state($payment_state)) {
+					// Payment is in a terminal state – do not allow the customer to retry.
+					return [
+						'result'   => 'failure',
+						'redirect' => $order->get_view_order_url(),
+					];
+				}
+
+				if ($payment_state !== '' && $this->is_processing_infynipay_payment_state($payment_state) && $fresh_redirect !== '') {
+					// Payment is still in-progress – redirect back to InfyniPay using the fresh URL.
+					return [
+						'result'   => 'success',
+						'redirect' => $fresh_redirect,
+					];
+				}
+
+				// API unavailable – fall back to the stored values.
+				$this->update_order_status($order_id);
+				if ($order->get_status() === 'failed') {
+					return [
+						'result'   => 'failure',
+						'redirect' => $order->get_view_order_url(),
+					];
+				}
+
+				return [
+					'result'   => 'success',
+					'redirect' => $redirect_url,
+				];
+			}
+
+			$customer_id = $order->get_customer_id();
+			$return_url = $this->get_return_url($order);
+			$webhook_url = $this->build_public_wc_api_url('payment_webhook');
+			$this->maybe_log_local_callback_url($webhook_url, 'payment_webhook');
+
+			$this->log('Starting payment process. order_id: ' . $order_id, 'info');
+
+			// Generate request body
+			$items = [];
+			$has_subscription = false;
+
+			foreach ($order->get_items() as $item) {
+				/** @var WC_Order_Item_Product $item */
+				$product = $item->get_product();
+
+				if ($product && !$has_subscription) {
+					$product_type = $product->get_type();
+					if (
+						in_array($product_type, ['subscription', 'variable-subscription', 'subscription_variation'], true)
+						|| (class_exists('WC_Subscriptions_Product') && WC_Subscriptions_Product::is_subscription($product))
+					) {
+						$has_subscription = true;
+					}
+				}
+
+				$items[] = [
+					'name' => $item->get_name(),
+					'description' => $product ? $product->get_short_description() : '',
+					'amount' => (float) $order->get_item_total($item, false),
+					'quantity' => (int) $item->get_quantity(),
+					'tax' => (float) $order->get_item_tax($item),
+					'sku' => $product ? $product->get_sku() : '',
+					'category' => $product && $product->is_virtual()
+						? 'DigitalGoods'
+						: 'PhysicalGoods',
+				];
+			}
+
+			$body = array(
+				'referenceId' => "$order_id",
+				'amount' => $order->get_total(),
+				'currency' => $order->get_currency(),
+				'autoCapture' => true,
+				'showPayRecurringInCheckout' => $has_subscription,
+				'webhookUrl' => $webhook_url,
+				'returnUrl' => $return_url,
+				'customerOrder' => [
+					'customer' => [
+						'customerId' => $customer_id > 0 ? "$customer_id" : wp_generate_uuid4(),
+						'accountCreatedTime' => $order->get_date_created()
+							? $order->get_date_created()->date('c')
+							: null,
+						'firstName' => $order->get_billing_first_name(),
+						'lastName' => $order->get_billing_last_name(),
+						'email' => $order->get_billing_email(),
+						'phoneNumber' => $order->get_billing_phone(),
+						'mobileNumber' => $order->get_billing_phone(),
+						'address' => [
+							'streetAddressLine1' => $order->get_billing_address_1(),
+							'streetAddressLine2' => $order->get_billing_address_2(),
+							'zipCode' => $order->get_billing_postcode(),
+							'city' => $order->get_billing_city(),
+							'state' => $order->get_billing_state(),
+							'country' => WC()->countries->countries[$order->get_billing_country()] ?? '',
+							'countryCode' => $order->get_billing_country(),
+						]
+					],
+					'orderId' => "$order_id",
+					'description' => sprintf('Order #%s from %s', $order->get_id(), get_bloginfo('name')),
+					'customId' => (string) $order->get_order_key(),
+					'amount' => [
+						'total' => (float) $order->get_total(),
+						'handling' => 0,
+						'insurance' => 0,
+						'discount' => (float) $order->get_total_discount(),
+						'shipping' => (float) $order->get_shipping_total(),
+						'shippingDiscount' => 0,
+						'totalTax' => (float) $order->get_total_tax(),
+					],
+					'items' => $items
+				]
+			);
+
+			$payment_result = $this->payment_service->create_hosted_payment($this->app_id, $this->token, $body);
+
+			if (!is_wp_error($payment_result)) {
+				$this->log('Payment created successfully', 'info', array(
+					'order_id' => $order_id,
+					'payment_id' => $payment_result['paymentId'] ?? '',
+				));
+				$order->update_meta_data('_payment_service_payment_id', $payment_result['paymentId']);
+				$order->update_meta_data('_payment_service_redirect_url', $payment_result['redirectUrl']);
+				$order->add_order_note(
+					sprintf(
+						/* translators: %s: InfyniPay payment ID. */
+						__( 'InfyniPay payment initiated. Payment ID: %s', 'infynipay' ),
+						$payment_result['paymentId']
+					),
+					0,
+					true
+				);
+
+				// Save Fee details from API
+				if (isset($payment_result['feeBreakdown'])) {
+					$provider_fee = (float) $payment_result['feeBreakdown']['providerFee'];
+					$app_fee = (float) $payment_result['feeBreakdown']['appFee'];
+					
+					$order->update_meta_data('_provider_fee', $provider_fee);
+					$order->update_meta_data('_app_fee', $app_fee);
+					$order->update_meta_data('_net_amount', (float) $payment_result['feeBreakdown']['netAmount']);
+					
+					$this->log('Provider Fee saved: ' . $provider_fee, 'info');
+					$this->log('App Fee saved: ' . $app_fee, 'info');
+				}
+
+				$order->save();
+
+				$redirect_url = $payment_result['redirectUrl'];
+
+				$order->update_status('on-hold', __( 'Pending payment in InfyniPay.', 'infynipay' ));
+
+				return array(
+					'result' => 'success',
+					'redirect' => $redirect_url,
+				);
+			} else {
+				wc_add_notice(
+					__( 'There was a problem starting your InfyniPay payment. Please try again or contact the store for assistance.', 'infynipay' ),
+					'error'
+				);
+
+				return array(
+					'result'   => 'failure',
+					'messages' => __( 'There was a problem starting your InfyniPay payment. Please try again or contact the store for assistance.', 'infynipay' ),
+				);
+			}
+		}
+
+		/**
+		 * Reads the Authorization header in a server-portable way.
+		 *
+		 * getallheaders() is only guaranteed on Apache; on nginx/FPM it may be
+		 * undefined (fatal). Prefer the $_SERVER superglobal and fall back gracefully.
+		 */
+		protected function get_request_authorization_header(): string
+		{
+			if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+				return sanitize_text_field(wp_unslash($_SERVER['HTTP_AUTHORIZATION']));
+			}
+
+			if (isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+				return sanitize_text_field(wp_unslash($_SERVER['REDIRECT_HTTP_AUTHORIZATION']));
+			}
+
+			if (function_exists('getallheaders')) {
+				$headers = getallheaders();
+
+				if (is_array($headers)) {
+					foreach ($headers as $key => $value) {
+						if (strtolower((string) $key) === 'authorization') {
+							return trim((string) $value);
+						}
+					}
+				}
+			}
+
+			return '';
+		}
+
+		public function payment_webhook_handler()
+		{
+			try {
+				$auth_header = $this->get_request_authorization_header();
+				$token = preg_match('/^Bearer\s+(\S+)$/i', $auth_header, $m) ? $m[1] : '';
+
+				if (empty($token) || !hash_equals($this->webhook_token, $token)) {
+					throw new \RuntimeException('Invalid authorization token', 401);
+				}
+
+				$raw_body = file_get_contents('php://input');
+
+				if (empty($raw_body)) {
+					throw new \RuntimeException('Empty request body', 400);
+				}
+
+				$data = json_decode($raw_body, true);
+
+				if (json_last_error() !== JSON_ERROR_NONE) {
+					throw new \RuntimeException('Invalid JSON payload: ' . json_last_error_msg(), 400);
+				}
+
+				$order_id = absint($data['payment']['referenceId'] ?? 0);
+				$payment_state = sanitize_key((string) ($data['payment']['paymentState'] ?? ''));
+
+				if ($order_id === 0) {
+					throw new \RuntimeException('Missing referenceId in payload', 400);
+				}
+
+				$this->log('Webhook state transition', 'info', [
+					'order_id'      => $order_id,
+					'payment_state' => $payment_state,
+				]);
+
+				$this->update_order_status($order_id);
+
+				status_header(200);
+				exit('OK');
+
+			} catch (\Throwable $e) {
+				$this->log('Webhook request failed', 'error', [
+					'reason' => $e->getMessage(),
+					'code'   => $e->getCode(),
+				]);
+				status_header($e->getCode() >= 400 ? $e->getCode() : 400);
+				exit( esc_html( $e->getMessage() ) );
+			}
+		}
+
+		protected function payment_state_handler($order_status, $payment_state)
+		{
+			switch (strtolower($payment_state)) {
+
+				case 'refunding':
+					// Only move to on-hold if order hasn't already reached a further state.
+					return in_array($order_status, ['processing', 'completed'], true)
+						? $order_status
+						: 'on-hold';
+
+				case 'refunded':
+					// Always reflect an internal InfyniPay refund, even from 'completed'.
+					return 'refunded';
+
+				case 'captured':
+					// Never downgrade a completed order back to processing.
+					return $order_status === 'completed' ? 'completed' : 'processing';
+
+				case 'failed':
+					// Terminal failure – no retry possible. Cancel so WooCommerce
+					// restores reserved stock automatically.
+					return 'cancelled';
+
+				case 'disputed':
+					// Chargeback filed. Mark as failed to flag for admin review.
+					// Stock has likely already been fulfilled; do not restore it.
+					return 'failed';
+
+				case 'created':
+				case 'authorized':
+				case 'authorizing':
+				case 'approved':
+				case 'capturing':
+				case 'saleinprogress':
+				case 'providerauthorizedhold':
+				case 'cancelling':
+				case 'capturedhold':
+					// Never walk back an already-paid or completed order.
+					return in_array($order_status, ['processing', 'completed'], true)
+						? $order_status
+						: 'on-hold';
+
+				default:
+					return $order_status;
+			}
+		}
+
+		public function update_order_status($order_id)
+		{
+			$order = wc_get_order($order_id);
+
+			if (!$order) {
+				return;
+			}
+
+			$order_status = $order->get_status();
+
+			// Block truly terminal statuses that should never be overwritten.
+			// 'completed' is intentionally excluded so that a InfyniPay internal
+			// refund can still transition a completed order to 'refunded'.
+			if (in_array($order_status, ['cancelled', 'failed', 'refunded'], true)) {
+				return;
+			}
+
+			$payment_details = $this->payment_service->get_payment_by_reference_id($this->app_id, $this->token, $order_id);
+
+			if (is_wp_error($payment_details)) {
+				return;
+			}
+
+			$payment_state = $payment_details['paymentState'] ?? '';
+
+			// Always sync the latest fee breakdown from the API, regardless of status change.
+			$this->sync_payment_fees($order, $payment_details);
+
+			// Cache refund eligibility for the admin info notice (shown on order edit page).
+			if (array_key_exists('canRefund', $payment_details)) {
+				$order->update_meta_data('_infynipay_can_refund', $payment_details['canRefund'] ? '1' : '0');
+				$cached_provider = $this->extract_provider_name($payment_details);
+				if ($cached_provider !== '') {
+					$order->update_meta_data('_infynipay_provider_name', $cached_provider);
+				}
+				$order->save_meta_data();
+			}
+
+			$this->log('Payment state fetched', 'info', [
+				'order_id' => $order_id,
+				'current_status' => $order_status,
+				'payment_state' => $payment_state
+			]);
+
+			$new_order_status = $this->payment_state_handler(
+				$order_status,
+				$payment_state
+			);
+
+			if ($order_status === $new_order_status) {
+				return;
+			}
+
+			if ($new_order_status === 'processing') {
+				$order->payment_complete();
+			} elseif (strtolower($payment_state) === 'disputed') {
+				$order->update_status(
+					$new_order_status,
+					__('Payment disputed (chargeback). Review this order immediately — do not ship if not yet fulfilled.', 'infynipay')
+				);
+				$this->notify_admin_disputed_order($order);
+			} else {
+				$order->update_status($new_order_status, __( 'Order status synced from InfyniPay.', 'infynipay' ));
+			}
+
+			$this->log('Order status updated', 'info', [
+				'order_id' => $order_id,
+				'old_status' => $order_status,
+				'new_status' => $new_order_status,
+				'payment_state' => $payment_state
+			]);
+		}
+
+		protected function sync_payment_fees(WC_Order $order, array $payment_details): void
+		{
+			$fee_breakdown = $payment_details['feeBreakdown'] ?? null;
+
+			if (!is_array($fee_breakdown)) {
+				return;
+			}
+
+			$changed = false;
+
+			if (array_key_exists('providerFee', $fee_breakdown)) {
+				$order->update_meta_data('_provider_fee', (float) $fee_breakdown['providerFee']);
+				$changed = true;
+			}
+
+			if (array_key_exists('appFee', $fee_breakdown)) {
+				$order->update_meta_data('_app_fee', (float) $fee_breakdown['appFee']);
+				$changed = true;
+			}
+
+			if (array_key_exists('netAmount', $fee_breakdown)) {
+				$order->update_meta_data('_net_amount', (float) $fee_breakdown['netAmount']);
+				$changed = true;
+			}
+
+			if ($changed) {
+				$order->save_meta_data();
+			}
+		}
+
+		public function thankyou_page_handler($order_id)
+		{
+			$this->update_order_status($order_id);
+		}
+
+		protected function notify_admin_disputed_order(WC_Order $order): void
+		{
+			$order_id   = $order->get_id();
+			$order_link = admin_url('post.php?post=' . $order_id . '&action=edit');
+			$subject    = sprintf(
+				/* translators: 1: site name, 2: order number. */
+				__( '[%1$s] Payment dispute on order #%2$d', 'infynipay' ),
+				get_bloginfo('name'),
+				$order_id
+			);
+			$message    = implode("\n\n", [
+				sprintf(
+					/* translators: %d: order number. */
+					__( 'A chargeback or payment dispute has been filed for order #%d.', 'infynipay' ),
+					$order_id
+				),
+				__( 'Review this order immediately. If the goods have not yet been shipped, put the order on hold and do not fulfil it until the dispute is resolved.', 'infynipay' ),
+				/* translators: %s: admin order edit URL. */
+				sprintf( __( 'Order details: %s', 'infynipay' ), $order_link ),
+				sprintf(
+					/* translators: 1: customer first name, 2: customer last name, 3: customer email address. */
+					__( 'Customer: %1$s %2$s (%3$s)', 'infynipay' ),
+					$order->get_billing_first_name(),
+					$order->get_billing_last_name(),
+					$order->get_billing_email()
+				),
+				sprintf(
+					/* translators: %s: formatted order total. */
+					__( 'Order total: %s', 'infynipay' ),
+					wp_strip_all_tags(wc_price($order->get_total()))
+				),
+			]);
+
+			wp_mail(get_option('admin_email'), $subject, $message);
+
+			$this->log('Admin notified of disputed order', 'warning', [
+				'order_id' => $order_id,
+			]);
+		}
+
+		public function process_refund($order_id, $amount = null, $reason = '')
+		{
+			$order = wc_get_order($order_id);
+
+			if (!$order) {
+				return new WP_Error('invalid_order', __( 'Invalid order ID.', 'infynipay' ));
+			}
+
+			// InfyniPay only supports full-order refunds. Reject partial amounts.
+			$order_total = (float) $order->get_total();
+			$refund_amount = $amount !== null ? (float) $amount : $order_total;
+
+			if (round($refund_amount, 2) !== round($order_total, 2)) {
+				return new WP_Error(
+					'partial_refund_not_supported',
+					sprintf(
+						/* translators: %s: full order total amount. */
+						__( 'InfyniPay only supports full refunds. To refund this order, enter the full amount of %s.', 'infynipay' ),
+						html_entity_decode( wp_strip_all_tags( wc_price( $order_total ) ), ENT_QUOTES | ENT_HTML5 )
+					)
+				);
+			}
+
+			$payment_id = $order->get_meta('_payment_service_payment_id');
+
+			if (empty($payment_id)) {
+				return new WP_Error('missing_payment_id', __( 'Payment ID not found.', 'infynipay' ));
+			}
+
+			// Prevent duplicate refund calls
+			$lock_key = 'infynipay_refund_lock_' . $order_id;
+			if (get_transient($lock_key)) {
+				return new WP_Error('refund_in_progress', __( 'Refund already in progress.', 'infynipay' ));
+			}
+
+			set_transient($lock_key, 1, 60);
+
+			$this->log('Starting refund process', 'info', [
+				'order_id' => $order_id,
+				'payment_id' => $payment_id,
+				'amount' => $amount,
+				'reason' => $reason
+			]);
+
+			// Validate refund eligibility
+			$check_body = $this->payment_service->get_payment_by_id($this->app_id, $this->token, $payment_id);
+
+			if (is_wp_error($check_body)) {
+				delete_transient($lock_key);
+				return new WP_Error('refund_check_failed', __( 'Unable to verify refund eligibility.', 'infynipay' ));
+			}
+
+			$can_refund = !empty($check_body['canRefund']);
+
+			$this->log('Refund eligibility check', 'info', [
+				'order_id'    => $order_id,
+				'payment_id'  => $payment_id,
+				'can_refund'  => $can_refund,
+				'check_body'  => $check_body,
+			]);
+
+			// Cache canRefund state for the admin info notice.
+			$order->update_meta_data('_infynipay_can_refund', $can_refund ? '1' : '0');
+			$cached_provider = $this->extract_provider_name($check_body);
+			if ($cached_provider !== '') {
+				$order->update_meta_data('_infynipay_provider_name', $cached_provider);
+			}
+			$order->save_meta_data();
+
+			$base_description = sprintf(
+				/* translators: %s: order number. */
+				__( 'Refund for order #%s issued from WooCommerce.', 'infynipay' ),
+				$order_id
+			);
+			$description = trim($reason) !== ''
+				? $base_description . ' ' . trim($reason)
+				: $base_description;
+
+			if ($can_refund) {
+				// Provider supports a native refund — trigger it through the refund API.
+				$body = $this->payment_service->refund_payment($this->app_id, $this->token, $payment_id, $description);
+			} else {
+				// Provider does not support native refunds — mark the payment as refunded manually.
+				$body = $this->app_service->mark_as_refund($this->app_id, $this->token, $payment_id, $description);
+
+				if (!is_wp_error($body)) {
+					$order->update_meta_data('_infynipay_manual_refund_required', '1');
+					$order->save_meta_data();
+				}
+			}
+
+			if (!$can_refund) {
+				$order->add_order_note(
+					'⚠️ ' . __( 'MANUAL REFUND REQUIRED: This payment provider does not support automatic refunds. No money has been returned to the customer automatically. You must manually transfer the refund amount to the customer’s bank account or original payment method.', 'infynipay' ),
+					1 // visible to admin
+				);
+			}
+			$order->update_meta_data('_infynipay_last_refund_time', current_time('mysql'));
+			$order->save();
+
+			$this->log('Refund API success', 'info', [
+				'order_id' => $order_id,
+				'payment_state' => $body['paymentState'] ?? null
+			]);
+
+			// Sync order status immediately
+			$this->update_order_status($order_id);
+
+			delete_transient($lock_key);
+
+			return true;
+		}
+
+		protected function webhook_token_generator($option_key, $settings)
+		{
+			$sandbox_webhook_token = $settings['sandbox_webhook_token'] ?? '';
+			$live_webhook_token = $settings['live_webhook_token'] ?? '';
+
+			if (empty($sandbox_webhook_token)) {
+				$sandbox_webhook_token = wp_generate_password(64, false);
+				$settings['sandbox_webhook_token'] = $sandbox_webhook_token;
+				update_option($option_key, $settings);
+			}
+
+			if (empty($live_webhook_token)) {
+				$live_webhook_token = wp_generate_password(64, false);
+				$settings['live_webhook_token'] = $live_webhook_token;
+				update_option($option_key, $settings);
+			}
+
+			$this->log('webhook tokens saved', 'info');
+
+			return [
+				'sandbox_webhook_token' => $sandbox_webhook_token,
+				'live_webhook_token' => $live_webhook_token,
+			];
+		}
+
+		protected function infynipay_render_admin_error_page($code, $message)
+		{
+			$error_json = wp_json_encode(
+				array(
+					'error'   => $code,
+					'message' => $message,
+					'status'  => 400,
+				),
+				JSON_PRETTY_PRINT
+			);
+
+			wp_die(
+				'<h1>' . esc_html__( 'Something went wrong', 'infynipay' ) . '</h1>' .
+				'<p>' . esc_html__( 'Please contact the store administrator.', 'infynipay' ) . '</p>' .
+				'<h3>' . esc_html__( 'Error details', 'infynipay' ) . '</h3>' .
+				'<pre style="white-space:pre-wrap;word-break:break-all;">' . esc_html( $error_json ) . '</pre>',
+				esc_html__( 'InfyniPay Setup Error', 'infynipay' ),
+				array( 'response' => 400, 'back_link' => true )
+			);
+		}
+
+		protected function log($message, $level = 'info', $context = [])
+		{
+			// Verbose levels are opt-in (WooCommerce best practice). Errors/warnings
+			// are always recorded so genuine failures remain diagnosable.
+			if (in_array($level, array('debug', 'info'), true) && !infynipay_bootstrap_debug_enabled()) {
+				return;
+			}
+
+			if (!isset($this->logger)) {
+				$this->logger = wc_get_logger();
+			}
+
+			$context = array_merge(
+				['source' => 'infynipay'], // IMPORTANT
+				$context
+			);
+
+			$this->logger->log($level, $message, $context);
+		}
+	}
+}
+
+// --- Display Fees next to order items (global scope) ---
+add_action('woocommerce_admin_order_totals_after_total', function($order_id){
+    $order = wc_get_order($order_id);
+
+    if (!$order instanceof WC_Order) {
+        return;
+    }
+
+    $provider_fee = (float) $order->get_meta('_provider_fee');
+    $app_fee      = (float) $order->get_meta('_app_fee');
+    $net_amount   = $order->get_meta('_net_amount');
+
+    $total_fee = $provider_fee + $app_fee;
+
+    if ($total_fee > 0) {
+        $fee_html        = wc_price($total_fee);
+        $net_amount_html = $net_amount !== '' ? wc_price($net_amount) : '';
+        include plugin_dir_path(__FILE__) . 'templates/order-fee-rows.php';
+    }
+});

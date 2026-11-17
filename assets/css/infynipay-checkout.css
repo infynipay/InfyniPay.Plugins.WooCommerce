@@ -1,0 +1,333 @@
+.payment_method_infynipay .payment_box,
+.wc-block-components-payment-method__content .infynipay-checkout-card {
+    background: transparent;
+}
+
+.infynipay-checkout-card {
+    padding: 8px 0 0;
+    color: #162218;
+}
+
+.infynipay-checkout-card--classic {
+    margin-top: 4px;
+}
+
+.infynipay-sandbox-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: #fef3c7;
+    color: #92400e;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.infynipay-sandbox-badge--inline {
+    vertical-align: middle;
+    margin-right: 4px;
+}
+
+.infynipay-provider-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.infynipay-provider-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    min-width: 52px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+}
+
+.infynipay-provider-chip__logo {
+    display: block;
+    width: 56px;
+    height: 18px;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.infynipay-provider-chip--card {
+    gap: 6px;
+    padding-inline: 10px;
+}
+
+.infynipay-provider-chip__card-icon {
+    position: relative;
+    width: 22px;
+    height: 14px;
+    border-radius: 3px;
+    background: linear-gradient(135deg, #1e3f2a 0%, #2f5a39 100%);
+}
+
+.infynipay-provider-chip__card-icon::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 4px;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.68);
+}
+
+.infynipay-provider-chip__label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #374151;
+    white-space: nowrap;
+}
+
+.infynipay-checkout-card__benefits {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 10px;
+}
+
+.infynipay-checkout-card__benefits li {
+    position: relative;
+    padding-left: 24px;
+    color: #223128;
+    line-height: 1.5;
+}
+
+.infynipay-checkout-card__benefits li::before {
+    content: "";
+    position: absolute;
+    top: 0.45em;
+    left: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, #2f5a39 0%, #7ab78d 100%);
+    box-shadow: 0 0 0 4px rgba(122, 183, 141, 0.18);
+}
+
+.wc-block-components-payment-method__description .infynipay-checkout-card,
+.wc-block-components-payment-method__content .infynipay-checkout-card {
+    margin-top: 10px;
+}
+
+/* ── Pending payment card (view-order page) ─────────────────── */
+
+.ph-pending-card {
+    margin: 28px 0;
+    border-radius: 12px;
+    border: 1px solid #d1fae5;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(22, 34, 24, 0.07);
+    overflow: hidden;
+}
+
+.ph-pending-card__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    background: #f0fdf4;
+    border-bottom: 1px solid #d1fae5;
+}
+
+.ph-pending-card__brand {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.ph-pending-card__brand-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #16a34a;
+    box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+}
+
+.ph-pending-card__brand-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: #166534;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+.ph-pending-card__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: #fffbeb;
+    border: 1px solid #fde68a;
+    color: #92400e;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.ph-pending-card__badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #f59e0b;
+    animation: ph-badge-pulse 2s ease-in-out infinite;
+    flex-shrink: 0;
+}
+
+@keyframes ph-badge-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.4; transform: scale(0.65); }
+}
+
+.ph-pending-card__body {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+    padding: 22px 20px 16px;
+}
+
+.ph-pending-card__icon {
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #16a34a;
+}
+
+.ph-pending-card__copy {
+    min-width: 0;
+    padding-top: 2px;
+}
+
+.ph-pending-card__title {
+    margin: 0 0 7px;
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: #111827;
+}
+
+.ph-pending-card__desc {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.65;
+    color: #6b7280;
+}
+
+.ph-pending-card__footer {
+    padding: 4px 20px 20px;
+}
+
+.ph-pending-card__cta {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 13px 20px !important;
+    border-radius: 8px !important;
+    background: linear-gradient(135deg, #1c5c33 0%, #2f8a4a 100%) !important;
+    color: #ffffff !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    text-decoration: none !important;
+    letter-spacing: 0.01em;
+    border: none !important;
+    box-shadow: 0 2px 8px rgba(28, 92, 51, 0.32), 0 1px 2px rgba(0, 0, 0, 0.12);
+    transition: filter 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+    box-sizing: border-box;
+}
+
+.ph-pending-card__cta:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(28, 92, 51, 0.38), 0 2px 4px rgba(0, 0, 0, 0.12) !important;
+    color: #ffffff !important;
+    text-decoration: none !important;
+}
+
+.ph-pending-card__cta:active {
+    transform: translateY(0);
+    filter: brightness(0.96);
+}
+
+.ph-pending-card__trust {
+    margin: 10px 0 0;
+    text-align: center;
+    font-size: 11.5px;
+    color: #9ca3af;
+    letter-spacing: 0.02em;
+}
+
+.ph-pending-card__trust-icon {
+    vertical-align: -0.1em;
+    margin-right: 3px;
+    opacity: 0.7;
+}
+
+@media (max-width: 640px) {
+    .infynipay-checkout-card__header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .ph-pending-card__header {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .ph-pending-card__body {
+        flex-direction: column;
+        gap: 14px;
+    }
+}
+
+/* ── Skeleton loading for provider chips in the checkout block ──
+ * React renders each chip with --loading on mount; onLoad/onError
+ * transitions status → "loaded" or "error", removing --loading.
+ * useEffect catches images already complete from browser cache.
+ */
+@keyframes infynipay-checkout-skeleton-shimmer {
+    0%   { background-position: -200px 0; }
+    100% { background-position: 200px 0; }
+}
+
+.infynipay-provider-chip--loading {
+    width: 80px;
+    min-width: 80px;
+    height: 36px;
+    border: none;
+    border-radius: 8px;
+    background-color: #e7eaee;
+    background-image: linear-gradient(90deg, #e7eaee 0%, #f0f2f4 40%, #e7eaee 100%);
+    background-size: 400px 100%;
+    background-repeat: no-repeat;
+    animation: infynipay-checkout-skeleton-shimmer 1.3s ease-in-out infinite;
+    overflow: hidden;
+}
+
+.infynipay-provider-chip--loading > * {
+    opacity: 0;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .infynipay-provider-chip--loading {
+        animation: none;
+        background-image: none;
+        background-color: #e7eaee;
+    }
+}

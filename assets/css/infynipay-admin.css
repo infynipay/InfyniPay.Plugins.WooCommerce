@@ -1,0 +1,803 @@
+body {
+    background: #f0f0f1;
+}
+
+/* Tighten vertical spacing between standard WooCommerce settings rows */
+.woocommerce_page_wc-settings .form-table tr {
+    vertical-align: top;
+}
+
+.woocommerce_page_wc-settings .form-table th,
+.woocommerce_page_wc-settings .form-table td {
+    padding-top: 10px;
+    padding-bottom: 10px;
+}
+
+.infynipay-error {
+    max-width: 600px;
+    margin: 80px auto;
+    background: #fff;
+    padding: 30px;
+    border-left: 4px solid #d63638;
+}
+
+.infynipay-error pre {
+    background: #f6f7f7;
+    padding: 12px;
+    overflow: auto;
+}
+
+/* ── InfyniPay localhost webhook warning ─────────────────────────── */
+.infynipay-warning-notice {
+    margin: 16px 0;
+    padding: 0;
+    border: 2px solid #ca8a04;
+    border-radius: 14px;
+    background: #fef08a;
+    box-shadow:
+        0 0 0 4px rgba(250, 204, 21, 0.35),
+        0 12px 32px rgba(120, 80, 0, 0.18);
+    overflow: hidden;
+    max-width: 760px;
+}
+
+/* Dark amber header band */
+.infynipay-warning-notice__header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    background: linear-gradient(135deg, #92400e 0%, #b45309 100%);
+    border-bottom: 2px solid #ca8a04;
+}
+
+.infynipay-warning-notice__icon {
+    flex-shrink: 0;
+    font-size: 22px;
+    line-height: 1;
+    color: #fef08a;
+}
+
+.infynipay-warning-notice__eyebrow {
+    color: #fef9c3;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    line-height: 1.3;
+}
+
+/* Yellow body */
+.infynipay-warning-notice__body-wrap {
+    padding: 18px 20px 20px;
+}
+
+.infynipay-warning-notice__title {
+    margin: 0 0 10px;
+    color: #78350f;
+    font-size: 17px;
+    line-height: 1.35;
+    font-weight: 700;
+}
+
+.infynipay-warning-notice__body {
+    margin: 0;
+    color: #7c4a00;
+    font-size: 14px;
+    line-height: 1.65;
+}
+
+.infynipay-warning-notice__body strong {
+    color: #78350f;
+}
+
+.infynipay-warning-notice__meta {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid #fcd34d;
+}
+
+.infynipay-warning-notice__meta-label {
+    display: block;
+    margin-bottom: 4px;
+    color: #92400e;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.infynipay-warning-notice__link {
+    color: #7c2d12;
+    font-weight: 600;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+    word-break: break-all;
+}
+
+.infynipay-warning-notice__link:hover,
+.infynipay-warning-notice__link:focus {
+    color: #431407;
+}
+
+.infynipay-settings-card {
+    border: 1px solid #d0d7de;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f7f8f4 100%);
+    padding: 0;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(25, 42, 28, 0.08);
+    max-width: 760px;
+}
+
+.infynipay-brand-lockup {
+    display: inline-block;
+    margin-bottom: 18px;
+}
+
+.infynipay-brand-lockup__mark {
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #162218 0%, #294331 100%);
+    color: #f7f8f4;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.infynipay-brand-lockup__logo {
+    display: block;
+    width: auto;
+    max-width: 120px;
+    max-height: 36px;
+    object-fit: contain;
+}
+
+.infynipay-settings-card.is-complete {
+    border-color: #7ab78d;
+}
+
+.infynipay-settings-card.is-pending {
+    border-color: #e0b252;
+}
+
+.infynipay-settings-card__compact {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 14px 18px;
+    border-radius: 0;
+    background:
+        radial-gradient(circle at top right, rgba(248, 214, 120, 0.24), transparent 34%),
+        linear-gradient(135deg, #17271a 0%, #294331 62%, #35563f 100%);
+}
+
+.infynipay-settings-card__compact-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.infynipay-settings-card__compact-label {
+    display: inline-flex;
+    align-items: center;
+    min-height: 28px;
+    margin-bottom: 10px;
+    padding: 0 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.14);
+    color: #eef6f0;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.infynipay-settings-card__compact-title {
+    margin: 0;
+    color: #ffffff;
+    font-size: 18px;
+    line-height: 1.2;
+}
+
+.infynipay-settings-card__actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.infynipay-settings-card__actions--below-banner {
+    padding: 10px 18px 14px;
+}
+
+.infynipay-settings-card__empty-state {
+    margin: 0;
+    color: #5f6b63;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.infynipay-settings-card__header {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    align-items: flex-start;
+    margin-bottom: 18px;
+}
+
+.infynipay-settings-card__eyebrow {
+    display: inline-block;
+    margin-bottom: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #5f6b63;
+}
+
+.infynipay-settings-card h3 {
+    margin: 0 0 6px;
+    font-size: 24px;
+    line-height: 1.2;
+    color: #162218;
+}
+
+.infynipay-settings-card p {
+    margin: 0;
+    max-width: 54ch;
+    color: #4d5a51;
+}
+
+.infynipay-settings-card__button {
+    white-space: nowrap;
+    min-height: 40px;
+    padding-inline: 18px;
+}
+
+.infynipay-settings-card__button--secondary {
+    border-color: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+.infynipay-settings-card__button--secondary:hover,
+.infynipay-settings-card__button--secondary:focus {
+    border-color: rgba(255, 255, 255, 0.28);
+    background: rgba(255, 255, 255, 0.14);
+    color: #ffffff;
+}
+
+/*
+ * Dark-background pill for the InfyniPay logo wherever WooCommerce renders it
+ * as a plain <img> in the admin (Payments list, gateway table rows, etc.).
+ * Needed because the logo asset has white text on a transparent background.
+ */
+
+
+/* ── InfyniPay logo size override in WooCommerce Payments list ──
+ * WC sets .woocommerce-list__item-image to width:40px/max-height:40px, which
+ * squashes a wide text logo. #id selector beats .class.class specificity.
+ */
+#infynipay .woocommerce-list__item-image {
+    width: auto;
+    max-width: 160px;
+    max-height: 48px;
+    height: auto;
+    border-radius: 4px;
+    object-fit: contain;
+}
+
+/* ── Provider logo strip injected into the WooCommerce Payments list row ── */
+.infynipay-provider-strip-admin {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.infynipay-env-badge {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    line-height: 1;
+    margin-right: 2px;
+}
+
+.infynipay-env-badge--live {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+
+.infynipay-env-badge--sandbox {
+    background: #fef9c3;
+    color: #854d0e;
+    border: 1px solid #fde68a;
+}
+
+.infynipay-provider-strip-admin__icon {
+    display: block;
+    width: auto;
+    height: 20px;
+    max-width: 36px;
+    border-radius: 4px;
+    background: #f3f4f5;
+    border: 1px solid #e2e4e7;
+    object-fit: contain;
+    padding: 2px 3px;
+}
+
+.infynipay-provider-strip-admin__overflow {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 4px;
+    background: #f3f4f5;
+    border: 1px solid #e2e4e7;
+    color: #50575e;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+.infynipay-supported-gateways-row {
+    border: 1px solid #d0d7de;
+    border-radius: 16px;
+    background: linear-gradient(180deg, #ffffff 0%, #f7f8f4 100%);
+    box-shadow: 0 10px 30px rgba(25, 42, 28, 0.08);
+    max-width: 760px;
+    padding: 18px 20px;
+}
+
+.infynipay-supported-gateways-row__empty {
+    margin: 0;
+    color: #5f6b63;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.infynipay-settings-card .infynipay-provider-strip,
+.infynipay-supported-gateways-row .infynipay-provider-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.infynipay-provider-strip.infynipay-provider-strip--grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    max-height: 172px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 2px 8px 6px 2px;
+}
+
+.infynipay-provider-strip--grid .infynipay-provider-chip {
+    width: 100%;
+    min-width: 0;
+}
+
+.infynipay-settings-card .infynipay-provider-chip,
+.infynipay-supported-gateways-row .infynipay-provider-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    min-width: 50px;
+    padding: 7px 10px;
+    border-radius: 10px;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.infynipay-settings-card .infynipay-provider-chip__logo,
+.infynipay-supported-gateways-row .infynipay-provider-chip__logo {
+    display: block;
+    width: 59px;
+    height: 18px;
+    flex-shrink: 0;
+    object-fit: contain;
+}
+
+.infynipay-settings-card .infynipay-provider-chip--card,
+.infynipay-supported-gateways-row .infynipay-provider-chip--card {
+    gap: 10px;
+    padding-inline: 16px;
+}
+
+.infynipay-settings-card .infynipay-provider-chip__card-icon,
+.infynipay-supported-gateways-row .infynipay-provider-chip__card-icon {
+    position: relative;
+    width: 28px;
+    height: 18px;
+    border-radius: 4px;
+    background: linear-gradient(135deg, #1e3f2a 0%, #2f5a39 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.infynipay-settings-card .infynipay-provider-chip__card-icon::after,
+.infynipay-supported-gateways-row .infynipay-provider-chip__card-icon::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 5px;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.68);
+}
+
+@media (max-width: 960px) {
+    .infynipay-provider-strip--grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 782px) {
+    .infynipay-provider-strip--grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+.infynipay-settings-card .infynipay-provider-chip__label,
+.infynipay-supported-gateways-row .infynipay-provider-chip__label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #223128;
+    white-space: nowrap;
+}
+
+.infynipay-settings-card .infynipay-provider-chip__label--fallback {
+    display: none;
+}
+
+.infynipay-settings-card .infynipay-provider-chip.is-image-missing {
+    padding-inline: 16px;
+}
+
+.infynipay-settings-card .infynipay-provider-chip.is-image-missing .infynipay-provider-chip__label--fallback {
+    display: inline;
+}
+
+.infynipay-settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    max-width: 760px;
+    padding: 4px 0;
+}
+
+.infynipay-settings-actions__button {
+    min-height: 40px;
+    padding-inline: 18px;
+}
+
+/* ── Environment setup cards (sandbox + live) ── */
+.infynipay-env-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    max-width: 760px;
+}
+
+.infynipay-env-card {
+    border: 1px solid #d0d7de;
+    border-radius: 16px;
+    background: #ffffff;
+    overflow: hidden;
+    box-shadow: 0 4px 20px rgba(25, 42, 28, 0.07);
+    display: flex;
+    flex-direction: column;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.infynipay-env-card:hover {
+    box-shadow: 0 8px 28px rgba(25, 42, 28, 0.12);
+    transform: translateY(-1px);
+}
+
+.infynipay-env-card--complete {
+    border-color: #86efac;
+}
+
+.infynipay-env-card--pending {
+    border-color: #fcd34d;
+}
+
+.infynipay-env-card__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+}
+
+.infynipay-env-card--sandbox .infynipay-env-card__header {
+    background: radial-gradient(circle at top right, rgba(251, 191, 36, 0.25), transparent 52%),
+                linear-gradient(135deg, #78350f 0%, #b45309 60%, #d97706 100%);
+}
+
+.infynipay-env-card--live .infynipay-env-card__header {
+    background: radial-gradient(circle at top right, rgba(134, 239, 172, 0.2), transparent 52%),
+                linear-gradient(135deg, #17271a 0%, #294331 60%, #35563f 100%);
+}
+
+.infynipay-env-card__badge {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.infynipay-env-card__status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.infynipay-env-card--complete .infynipay-env-card__status-dot {
+    background: #4ade80;
+    box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.35);
+}
+
+.infynipay-env-card--pending .infynipay-env-card__status-dot {
+    background: #fbbf24;
+    box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.35);
+}
+
+.infynipay-env-card__body {
+    padding: 16px 18px 12px;
+    flex: 1;
+}
+
+.infynipay-env-card__name {
+    font-size: 15px;
+    font-weight: 700;
+    color: #162218;
+    margin: 0 0 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.infynipay-env-card__status-text {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+}
+
+.infynipay-env-card--complete .infynipay-env-card__status-text {
+    color: #16a34a;
+}
+
+.infynipay-env-card--pending .infynipay-env-card__status-text {
+    color: #b45309;
+}
+
+.infynipay-env-card__status-icon {
+    flex-shrink: 0;
+    vertical-align: middle;
+}
+
+.infynipay-env-card__footer {
+    padding: 4px 18px 18px;
+}
+
+.infynipay-env-card__action {
+    display: block;
+    width: 100%;
+    text-align: center;
+    box-sizing: border-box;
+    min-height: 38px;
+    line-height: 36px;
+    padding-inline: 14px;
+    border-radius: 10px !important;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.infynipay-env-card__error {
+    padding: 8px 0 4px;
+    color: #5f6b63;
+    font-size: 12px;
+    line-height: 1.5;
+    font-style: italic;
+}
+
+@media (max-width: 782px) {
+    .infynipay-env-cards {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 782px) {
+    .infynipay-settings-card__compact {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .infynipay-settings-card__actions {
+        justify-content: flex-start;
+    }
+
+    .infynipay-settings-actions {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .infynipay-settings-card__header {
+        flex-direction: column;
+    }
+}
+
+/* ── Skeleton loading for provider chips in the Supported gateways row ──
+ * While the logo image is in flight the whole chip container shimmers.
+ * onload/onerror removes .infynipay-provider-chip--loading from the chip.
+ */
+@keyframes infynipay-skeleton-shimmer {
+    0%   { background-position: -200px 0; }
+    100% { background-position: 200px 0; }
+}
+
+.infynipay-supported-gateways-row .infynipay-provider-chip--loading {
+    width: 90px;
+    min-width: 90px;
+    height: 36px;
+    border-radius: 10px;
+    background-color: #e7eaee;
+    background-image: linear-gradient(90deg, #e7eaee 0%, #f0f2f4 40%, #e7eaee 100%);
+    background-size: 400px 100%;
+    background-repeat: no-repeat;
+    animation: infynipay-skeleton-shimmer 1.3s ease-in-out infinite;
+    overflow: hidden;
+}
+
+.infynipay-supported-gateways-row .infynipay-provider-chip--loading > * {
+    opacity: 0;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .infynipay-supported-gateways-row .infynipay-provider-chip--loading {
+        animation: none;
+        background-image: none;
+    }
+}
+
+/* ── Order detail — InfyniPay payment card ────────────────────────── */
+
+.infynipay-order-card {
+    margin: 14px 0 18px;
+    border-radius: 10px;
+    border: 1px solid #d1fae5;
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.07), 0 4px 16px rgba(22, 34, 24, 0.06);
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+.infynipay-order-card__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 16px;
+    background: linear-gradient(135deg, #1a3a24 0%, #2d5c38 100%);
+}
+
+.infynipay-order-card__logo {
+    display: block;
+    height: 22px;
+    width: auto;
+}
+
+.infynipay-order-card__badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.65);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+.infynipay-order-card__badge-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4ade80;
+    box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.22);
+    flex-shrink: 0;
+}
+
+.infynipay-order-card__body {
+    padding: 14px 16px 16px;
+}
+
+.infynipay-order-card__label {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: 7px;
+}
+
+.infynipay-order-card__id-row {
+    display: flex;
+    align-items: center;
+    background: #f9fafb;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 9px 13px;
+    margin-bottom: 13px;
+}
+
+.infynipay-order-card__id {
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+    font-size: 15px;
+    font-weight: 600;
+    color: #111827;
+    letter-spacing: 0.01em;
+}
+
+.infynipay-order-card__cta {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    width: 100%;
+    padding: 10px 16px !important;
+    background: linear-gradient(135deg, #1c5c33 0%, #2f8a4a 100%) !important;
+    color: #ffffff !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    text-decoration: none !important;
+    border-radius: 7px !important;
+    border: none !important;
+    box-shadow: 0 2px 6px rgba(28, 92, 51, 0.28);
+    transition: filter 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+    box-sizing: border-box;
+    cursor: pointer;
+}
+
+.infynipay-order-card__cta:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    color: #ffffff !important;
+    text-decoration: none !important;
+    box-shadow: 0 5px 16px rgba(28, 92, 51, 0.36);
+}
+
+.infynipay-order-card__cta:active {
+    transform: translateY(0);
+    filter: brightness(0.96);
+}
+
+.infynipay-order-card__cta svg {
+    flex-shrink: 0;
+}
